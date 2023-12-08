@@ -410,7 +410,8 @@ class SISettings:
                  retention_local_strict=True,
                  cloud_storage_max_throughput_per_shard: Optional[int] = None,
                  cloud_storage_signature_version: str = "s3v4",
-                 before_call_headers: Optional[dict[str, Any]] = None):
+                 before_call_headers: Optional[dict[str, Any]] = None,
+                 skip_end_of_test_scrubbing: bool = False):
         """
         :param fast_uploads: if true, set low upload intervals to help tests run
                              quickly when they wait for uploads to complete.
@@ -465,6 +466,7 @@ class SISettings:
         self.cloud_storage_max_throughput_per_shard = cloud_storage_max_throughput_per_shard
         self.cloud_storage_signature_version = cloud_storage_signature_version
         self.before_call_headers = before_call_headers
+        self.skip_end_of_test_scrubbing = skip_end_of_test_scrubbing
 
         if fast_uploads:
             self.cloud_storage_segment_max_upload_interval_sec = 10

@@ -154,7 +154,11 @@ def cluster(log_allow_list=None,
 
                 self.redpanda.validate_controller_log()
 
-                if self.redpanda.si_settings is not None:
+                # Temporarily disable scrubbing.
+                # This is very expensive for scale tests which we don't run at all today.
+                # Some tests are better than no tests. Should add scrubbing and diagnostics back.
+                # Maybe internal scrub is good enough. It also seems to be much faster.
+                if self.redpanda.si_settings is not None and not self.redpanda.si_settings.skip_end_of_test_scrubbing:
                     try:
                         self.redpanda.maybe_do_internal_scrub()
                         self.redpanda.stop_and_scrub_object_storage()

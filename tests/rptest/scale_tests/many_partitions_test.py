@@ -177,6 +177,7 @@ class ScaleParameters:
                 cloud_storage_housekeeping_interval_ms=
                 cloud_storage_housekeeping_interval_ms,
                 use_bucket_cleanup_policy=True,
+                skip_end_of_test_scrubbing=True,
             )
         else:
             self.si_settings = None
@@ -314,6 +315,10 @@ class ManyPartitionsTest(PreallocNodesTest):
                 # to pad out tiered storage metadata, we don't want them to
                 # get merged together.
                 'cloud_storage_enable_segment_merging': False,
+
+                # Disable scrubbing for the duration of the test to reduce S3 request rate.
+                # An internal scrub will be performed before shutting down the redpanda service.
+                'cloud_storage_enable_scrubbing': False,
             },
             # Configure logging the same way a user would when they have
             # very many partitions: set logs with per-partition messages
