@@ -267,6 +267,10 @@ class SimpleSelfTest(Test):
         Execute a few of the methods that will connect to the k8s pod.
         """
 
+        self.redpanda.set_cluster_config({
+            'cloud_storage_spillover_manifest_max_segments': 1
+        })
+
         node_memory = float(self.redpanda.get_node_memory_mb())
         assert node_memory > 1.0
 

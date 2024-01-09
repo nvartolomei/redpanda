@@ -1383,3 +1383,24 @@ class CloudCluster():
         return self.cloudv2._http_post(base_url=self.config.admin_api_url,
                                        endpoint='/ScaleCluster',
                                        json=payload)
+
+    def set_cluster_config_overrides(self,
+                                     values: dict[bool | int | str | None]):
+        """
+        Set cluster config overrides using cloud admin api.
+
+        Previous overrides are reverted to values from the installpack
+        or default redpanda configuration if installpack doesn't have
+        overrides of its own.
+        """
+        payload = {
+            'cluster_id': self.cluster_id,
+            'values': [{
+                'name': k,
+                'value': v
+            } for k, v in values.items()]
+        }
+
+        return self.cloudv2._http_post(base_url=self.config.admin_api_url,
+                                       endpoint='/SetClusterConfigOverrides',
+                                       json=payload)
