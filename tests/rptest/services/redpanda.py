@@ -1483,6 +1483,8 @@ class RedpandaServiceCloud(RedpandaServiceK8s):
             self.logger.info(
                 f'num_brokers is {num_brokers}, but setting to None for cloud')
 
+        # TODO(nv): Handle extra_rp_conf
+
         self._trim_logs = False
 
         # Prepare values from globals.json to serialize
@@ -1517,6 +1519,9 @@ class RedpandaServiceCloud(RedpandaServiceK8s):
         self.logger.info(
             'ResourceSettings: setting dedicated_nodes=True because serving from redpanda cloud'
         )
+
+        self.tier_name = tier_name
+        self.cloud_cluster_config_overrides = {}
 
     @property
     def kubectl(self):
@@ -1589,7 +1594,52 @@ class RedpandaServiceCloud(RedpandaServiceK8s):
         return self._cloud_cluster.get_install_pack_version()
 
     def set_cluster_config(self, values: dict, timeout: int = 300):
-        pass
+        """
+        Update cluster configuration with new values.
+
+        This is more complex than it needs to be because at this time cloud api
+        doesn't have an easy way to check that the overrides were propagated.
+
+        To solve this, we compute the final configuration ourselves and wait
+        for the cluster to report the same values.
+
+        Since it would be too tedious to replicate all redpanda's config logic
+        the caller needs to account for that. E.g. set values that respect
+        constraints. Otherwise, the "want" vs "have" config will never match.
+        """
+
+        self.cloud_cluster_config_overrides.update(values)
+        for k, v in list(self.cloud_cluster_config_overrides.items()):
+            if v is None:
+                del self.cloud_cluster_config_overrides[k]
+
+        print(self._cloud_cluster.isAlive)
+
+        # self._cloud_cluster.set_cluster_config_overrides(
+        #     self.cloud_cluster_config_overrides)
+
+        # Compute expected config values.
+        expected_config = {
+            **self._get_install_pack_cluster_config(),
+            **self.cloud_cluster_config_overrides
+        }
+        self.logger.debug(
+            f"Waiting for {expected_config=} to be propagated to the cluster")
+
+        def expect_config_matches():
+            print("!!! cluster config")
+            print(self.pods[0].query_admin('/cluster_config'))
+
+            cluster_config = self._admin.get_cluster_config()
+            self.logger.debug(f"{cluster_config=}")
+
+            # TODO(nv): Get config and compare. Iterate through all brokers.
+            return expected_config == cluster_config
+
+        wait_until(expect_config_matches,
+                   timeout_sec=timeout,
+                   backoff_sec=5,
+                   err_msg="Expected config doesn't match cluster config")
 
     def sockets_clear(self, node):
         return True
@@ -1653,6 +1703,25 @@ class RedpandaServiceCloud(RedpandaServiceK8s):
 
         # Load install pack and check profile
         return install_pack_client.getInstallPack(install_pack_version)
+    
+    def _get_install_pack_cluster_config(self):
+        install_pack = self.get_install_pack()
+        self.logger.debug(f"Loaded install pack '{install_pack['version']}': "
+                          f"Redpanda v{install_pack['redpanda_version']}, "
+                          f"created at '{install_pack['created_at']}'")
+
+        if self.tier_name not in install_pack['config_profiles']:
+            # throw user friendly error
+            install_pack_profiles = ", ".join(
+                install_pack['config_profiles'].keys())
+            raise RuntimeError(
+                f"'{self.tier_name}' not found among config profiles: {install_pack_profiles}"
+            )
+
+        config_profile = install_pack['config_profiles'][
+            self.tier_name]
+
+        return config_profile['cluster_config']
 
     def cloud_agent_ssh(self, remote_cmd):
         """Run the given command on the redpanda agent node of the cluster.

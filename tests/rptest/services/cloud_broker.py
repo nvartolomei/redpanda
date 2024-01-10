@@ -56,7 +56,7 @@ class CloudBroker():
             GET calls to Proxy API via ssh/curl to pod
             https://docs.redpanda.com/api/pandaproxy-rest/
         """
-        return self._query_broker(8082, path)
+        return self._query_broker(path, 8082)
 
     def query_admin(self, path):
         """
@@ -65,7 +65,7 @@ class CloudBroker():
             https://docs.redpanda.com/api/admin-api/#tag/Clusters/operation/get_cluster_health_overview
         """
         _path = f"/v1{path}"
-        return self._query_broker(9644, _path)
+        return self._query_broker(_path, 9644)
 
     def get_health_overview(self):
         return self.query_admin("/cluster/health_overview")
