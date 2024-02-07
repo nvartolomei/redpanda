@@ -834,6 +834,7 @@ private:
     std::unique_ptr<probe> _probe;
     ctx_log _ctxlog;
     ss::condition_variable _commit_index_updated;
+    ss::condition_variable _majority_replicated_index_updated;
 
     std::chrono::milliseconds _replicate_append_timeout;
     std::chrono::milliseconds _recovery_append_timeout;
@@ -870,7 +871,7 @@ private:
      */
     model::offset _last_quorum_replicated_index;
     model::offset _last_leader_visible_offset;
-    consistency_level _last_write_consistency_level;
+    bool _last_write_flushed;
     offset_monitor _consumable_offset_monitor;
     ss::condition_variable _follower_reply;
     append_entries_buffer _append_requests_buffer;

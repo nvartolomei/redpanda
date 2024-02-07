@@ -259,6 +259,7 @@ void consensus::shutdown_input() {
         _vote_timeout.cancel();
         _as.request_abort();
         _commit_index_updated.broken();
+        _majority_replicated_index_updated.broken();
         _follower_reply.broken();
     }
 }
@@ -842,7 +843,7 @@ replicate_stages consensus::do_replicate(
     }
 
     return wrap_stages_with_gate(
-      _bg, _batcher.replicate(expected_term, std::move(rdr), opts.consistency));
+      _bg, _batcher.replicate(expected_term, std::move(rdr), opts));
 }
 
 ss::future<model::record_batch_reader>
@@ -3495,8 +3496,12 @@ void consensus::maybe_update_majority_replicated_index() {
         }
         return model::offset{};
     });
+    auto previous_majority_replicated_index = _majority_replicated_index;
     _majority_replicated_index = std::max(
       _majority_replicated_index, majority_match);
+    if (previous_majority_replicated_index != _majority_replicated_index) {
+        _majority_replicated_index_updated.broadcast();
+    }
 
     _last_leader_visible_offset = std::max(
       _last_leader_visible_offset, last_visible_index());
