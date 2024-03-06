@@ -30,6 +30,7 @@
 #include <absl/container/flat_hash_map.h>
 
 #include <limits>
+#include <tuple>
 #include <type_traits>
 
 class batch_cache_test_fixture;
@@ -39,6 +40,53 @@ using dirty_batch_cache_entry
   = ss::bool_class<struct dirty_batch_cache_entry_tag>;
 
 class batch_cache_index;
+
+namespace detail {
+
+class batch_cache_dirty_tracker {
+public:
+    void mark_dirty(std::pair<model::offset, model::offset> range) {
+        if (_min == model::offset{}) {
+            _min = range.first;
+            _max = range.second;
+        } else {
+            vassert(
+              _min < range.first && _max < range.second,
+              "newly tracked offset must be above any previously seen offsets "
+              "(inserting: [{}, {}], state: {})",
+              range.first,
+              range.second,
+              *this);
+            _max = range.second;
+        }
+    }
+
+    void mark_clean(model::offset up_to) {
+        if (up_to >= _max) {
+            _min = model::offset{};
+            _max = model::offset{};
+        } else {
+            _min = std::max(_min, up_to);
+        }
+    }
+
+    auto min() const { return _min; };
+    auto max() const { return _max; };
+
+    bool clean() { return _min == model::offset{}; }
+
+    friend std::ostream&
+    operator<<(std::ostream& o, const batch_cache_dirty_tracker& t) {
+        o << "{min: " << t._min << ", max: " << t._max << "}";
+        return o;
+    }
+
+private:
+    model::offset _min;
+    model::offset _max;
+};
+
+} // namespace detail
 
 /**
  * The batch cache system consists of two components. The `batch_cache` is a
@@ -151,7 +199,9 @@ public:
 
         explicit range(batch_cache_index& index);
         explicit range(
-          batch_cache_index& index, const model::record_batch& batch);
+          batch_cache_index& index,
+          const model::record_batch& batch,
+          dirty_batch_cache_entry dirty);
 
         ~range() noexcept = default;
         range(range&&) noexcept = delete;
@@ -173,8 +223,10 @@ public:
         void unpin() { _pinned = false; }
         bool pinned() const { return _pinned; }
 
-        void mark_dirty() { _dirty = true; };
-        void mark_clean() { _dirty = false; };
+        bool clean() { return _dirty_tracker.clean(); };
+        void mark_clean(model::offset up_to) {
+            _dirty_tracker.mark_clean(up_to);
+        }
 
         size_t memory_size() const;
         size_t bytes_left() const;
@@ -182,7 +234,7 @@ public:
         bool empty() const;
         // checks if record batch will fit into current range
         bool fits(const model::record_batch& b) const;
-        uint32_t add(const model::record_batch&);
+        uint32_t add(const model::record_batch&, dirty_batch_cache_entry);
 
     private:
         friend class batch_cache;
@@ -204,7 +256,8 @@ public:
         // let readers read it from the cache rather than falling back to disk
         // where the data doesn't exist yet. It exists simultaneously in the
         // segment appender chunk cache and is pending write.
-        bool _dirty{false};
+        detail::batch_cache_dirty_tracker _dirty_tracker;
+
         size_t _size = 0;
         intrusive_list_hook _hook;
         batch_cache_index& _index;
@@ -273,7 +326,8 @@ public:
      * The returned weak_ptr will be invalidated if its memory is reclaimed. To
      * evict the range, move it into batch_cache::evict().
      */
-    entry put(batch_cache_index&, const model::record_batch&);
+    entry put(
+      batch_cache_index&, const model::record_batch&, dirty_batch_cache_entry);
 
     /**
      * \brief Remove a batch from the cache.
@@ -443,18 +497,10 @@ public:
              * entries are initialized in the cache and index, clean-up happens
              * correctly on either side.
              */
-            auto p = _cache->put(*this, batch);
+            auto p = _cache->put(*this, batch, dirty);
             if (dirty) {
-                vassert(
-                  _min_dirty_offset < offset,
-                  "Can't write a dirty entry at an offset ({}) lower than "
-                  "previous ({})",
-                  offset,
-                  _min_dirty_offset);
-                if (_min_dirty_offset == model::offset{}) {
-                    _min_dirty_offset = offset;
-                }
-                p.range()->mark_dirty();
+                _dirty_tracker.mark_dirty(
+                  {batch.base_offset(), batch.last_offset()});
             }
             _index.emplace(offset, std::move(p));
         } else {
@@ -502,7 +548,10 @@ public:
      */
     void truncate(model::offset offset);
 
-    void mark_clean();
+    /**
+     * Marks batches below the specified offset as evictable.
+     */
+    void mark_clean(model::offset up_to);
 
     /*
      * Testing interface used to evict a batch from the cache identified by
@@ -600,7 +649,7 @@ private:
     index_type _index;
     batch_cache::range_ptr _small_batches_range = nullptr;
 
-    model::offset _min_dirty_offset;
+    detail::batch_cache_dirty_tracker _dirty_tracker;
 
     friend std::ostream& operator<<(std::ostream&, const batch_cache_index&);
 };

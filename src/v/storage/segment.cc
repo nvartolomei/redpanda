@@ -344,7 +344,7 @@ ss::future<> segment::do_flush() {
         _tracker.stable_offset = _tracker.committed_offset;
         _reader->set_file_size(std::max(fsize, _reader->file_size()));
         if (_cache) {
-            _cache->mark_clean();
+            _cache->mark_clean(_tracker.stable_offset);
         }
         clear_cached_disk_usage();
     });
@@ -646,6 +646,9 @@ void segment::advance_stable_offset(size_t filepos) {
 
     _reader->set_file_size(it->first);
     _tracker.stable_offset = it->second;
+    if (_cache) {
+        _cache->mark_clean(_tracker.stable_offset);
+    }
     _inflight.erase(_inflight.begin(), std::next(it));
 
     // after data gets flushed out of the appender recheck on disk size

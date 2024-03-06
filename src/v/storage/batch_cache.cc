@@ -33,9 +33,11 @@ batch_cache::range::range(batch_cache_index& index)
 }
 
 batch_cache::range::range(
-  batch_cache_index& index, const model::record_batch& batch)
+  batch_cache_index& index,
+  const model::record_batch& batch,
+  dirty_batch_cache_entry dirty)
   : _index(index) {
-    add(batch);
+    add(batch, dirty);
 }
 
 model::record_batch batch_cache::range::batch(size_t o) {
@@ -94,7 +96,8 @@ bool batch_cache::range::fits(const model::record_batch& b) const {
     return space_left >= to_add;
 }
 
-uint32_t batch_cache::range::add(const model::record_batch& b) {
+uint32_t batch_cache::range::add(
+  const model::record_batch& b, dirty_batch_cache_entry dirty) {
     auto offset = _arena.size_bytes();
     reflection::adl<model::record_batch_header>{}.to(_arena, b.header().copy());
     _size += serialized_header_size;
@@ -114,6 +117,9 @@ uint32_t batch_cache::range::add(const model::record_batch& b) {
     }
 
     _offsets.push_back(b.base_offset());
+    if (dirty) {
+        _dirty_tracker.mark_dirty({b.base_offset(), b.last_offset()});
+    }
 
     return offset;
 }
@@ -136,8 +142,10 @@ batch_cache::batch_cache(const reclaim_options& opts)
     _background_reclaimer.start();
 }
 
-batch_cache::entry
-batch_cache::put(batch_cache_index& index, const model::record_batch& input) {
+batch_cache::entry batch_cache::put(
+  batch_cache_index& index,
+  const model::record_batch& input,
+  dirty_batch_cache_entry dirty) {
     // notify no matter what the exit path
     auto notify_guard = ss::defer([this] { _background_reclaimer.notify(); });
 
@@ -156,7 +164,7 @@ batch_cache::put(batch_cache_index& index, const model::record_batch& input) {
     // isn't on a lru/pool list.
 
     if (static_cast<size_t>(input.size_bytes()) > range::range_size) {
-        auto r = new range(index, input);
+        auto r = new range(index, input, dirty);
         _lru.push_back(*r);
         _size_bytes += r->memory_size();
         return entry(0, r->weak_from_this());
@@ -172,7 +180,7 @@ batch_cache::put(batch_cache_index& index, const model::record_batch& input) {
     }
 
     auto initial_sz = index._small_batches_range->memory_size();
-    auto offset = index._small_batches_range->add(input);
+    auto offset = index._small_batches_range->add(input, dirty);
     // calculate size difference to update batch cache size
     int64_t diff = (int64_t)index._small_batches_range->memory_size()
                    - initial_sz;
@@ -190,7 +198,10 @@ batch_cache::~batch_cache() noexcept {
 
 void batch_cache::evict(range_ptr&& e) {
     if (e) {
-        vassert(!e->_dirty, "Requested to evict a range with dirty data.");
+        vassert(
+          e->clean(),
+          "Requested to evict a range with dirty data: {}",
+          e->_dirty_tracker);
 
         // it's necessary to cause `e` to be sinked so the move constructor
         // invalidates the caller's range_ptr. simply interacting with the
@@ -249,7 +260,7 @@ size_t batch_cache::reclaim(size_t size) {
         }
 
         // skip any range that has a live reference.
-        if (unlikely(it->pinned() || it->_dirty)) {
+        if (unlikely(it->pinned() || !it->clean())) {
             ++it;
             continue;
         }
@@ -388,9 +399,7 @@ batch_cache_index::read_result batch_cache_index::read(
 void batch_cache_index::truncate(model::offset offset) {
     lock_guard lk(*this);
 
-    vassert(
-      _min_dirty_offset == model::offset{},
-      "It is not allowed to call truncate() with dirty data in the index.");
+    vassert(_dirty_tracker.clean(), "truncate() with dirty data in the index.");
 
     if (auto it = find_first(offset); it != _index.end()) {
         // rule out if possible, otherwise always be pessimistic
@@ -406,22 +415,22 @@ void batch_cache_index::truncate(model::offset offset) {
     }
 }
 
-void batch_cache_index::mark_clean() {
-    if (_min_dirty_offset == model::offset{}) {
+void batch_cache_index::mark_clean(model::offset up_to) {
+    if (_dirty_tracker.clean()) {
         // No dirty data in the cache.
         return;
     }
 
     lock_guard lk(*this);
 
-    if (auto it = find_first(_min_dirty_offset); it != _index.end()) {
-        std::for_each(it, _index.end(), [](index_type::value_type& e) {
-            e.second.range()->mark_clean();
-        });
+    if (auto it = find_first(_dirty_tracker.min()); it != _index.end()) {
+        std::for_each(
+          it, std::next(find_first(up_to)), [up_to](index_type::value_type& e) {
+              e.second.range()->mark_clean(up_to);
+          });
     }
 
-    // No more dirty entries left.
-    _min_dirty_offset = model::offset{};
+    _dirty_tracker.mark_clean(up_to);
 }
 
 void batch_cache::background_reclaimer::start() {
