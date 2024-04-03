@@ -22,6 +22,7 @@ from rptest.util import (
     produce_until_segments,
     wait_for_local_storage_truncate,
     KafkaCliTools,
+    wait_until_result,
 )
 
 
@@ -90,27 +91,22 @@ class OffsetForLeaderEpochArchivalTest(RedpandaTest):
                                str(remote_reads))
         rpk.alter_topic_config(topic.name, "redpanda.remote.write", 'true')
 
-        def wait_for_topic():
-            wait_until(lambda: len(list(rpk.describe_topic(topic.name))) > 0,
-                       30,
-                       backoff_sec=2)
-
         # restart whole cluster 6 times to trigger term rolls
         for i in range(0, 6):
-            wait_for_topic()
+            wait_for_topic_md(rpk, topic)
             produce_until_segments(
                 redpanda=self.redpanda,
                 topic=topic.name,
                 partition_idx=0,
                 count=2 * i,
             )
-            res = list(rpk.describe_topic(topic.name))
+            res = wait_for_topic_md(rpk, topic)
             epoch_offsets[res[0].leader_epoch] = res[0].high_watermark
             self.redpanda.restart_nodes(self.redpanda.nodes)
 
         self.logger.info(f"ledear epoch high watermarks: {epoch_offsets}")
 
-        wait_for_topic()
+        wait_for_topic_md(rpk, topic)
 
         self._alter_topic_retention_with_retry(topic.name)
 
@@ -172,11 +168,6 @@ class OffsetForLeaderEpochArchivalTest(RedpandaTest):
 
         rpk = RpkTool(self.redpanda)
 
-        def wait_for_topic():
-            wait_until(lambda: len(list(rpk.describe_topic(topic.name))) > 0,
-                       30,
-                       backoff_sec=2)
-
         def produce_until_spillover():
             initial_uploaded = self.num_manifests_uploaded()
 
@@ -191,16 +182,15 @@ class OffsetForLeaderEpochArchivalTest(RedpandaTest):
                        err_msg="Manifests were not created")
 
         for _ in range(0, 8):
-            wait_for_topic()
+            wait_for_topic_md(rpk, topic)
             produce_until_spillover()
-            res = list(rpk.describe_topic(topic.name))
+            res = wait_for_topic_md(rpk, topic)
             epoch_offsets[res[0].leader_epoch] = res[0].high_watermark
             self.redpanda.restart_nodes(self.redpanda.nodes)
 
         # Enable local retention for the topic to force reading from the 'archive'
         # section of the log and wait for the housekeeping to finish.
-        wait_for_topic()
-        rpk = RpkTool(self.redpanda)
+        wait_for_topic_md(rpk, topic)
 
         def topic_config_altered():
             try:
@@ -234,3 +224,18 @@ class OffsetForLeaderEpochArchivalTest(RedpandaTest):
                 f"epoch {epoch} end_offset: {epoch_end_offset}, expected offset: {offset}"
             )
             assert epoch_end_offset == offset, f"{epoch_end_offset} vs {offset}"
+
+
+def wait_for_topic_md(rpk: RpkTool, topic: TopicSpec):
+    """
+    Wait until the topic metadata is available. This is necessary
+    because we restart the cluster multiple times and the topic
+    metadata might not be available immediately.
+    """
+    def query_md():
+        partitions = list(rpk.describe_topic(topic.name))
+        if len(partitions) == 0:
+            return None
+        return partitions
+
+    return wait_until_result(query_md, 30, backoff_sec=2)
