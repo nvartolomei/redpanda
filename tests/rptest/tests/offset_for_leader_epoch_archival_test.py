@@ -9,7 +9,7 @@
 
 from math import fabs
 from rptest.services.cluster import cluster
-from ducktape.mark import parametrize
+from ducktape.mark import matrix
 from ducktape.utils.util import wait_until
 
 from rptest.services.kgo_verifier_services import KgoVerifierProducer
@@ -79,7 +79,7 @@ class OffsetForLeaderEpochArchivalTest(RedpandaTest):
         wait_until(alter_and_verify, 15, 0.5)
 
     @cluster(num_nodes=3, log_allow_list=RESTART_LOG_ALLOW_LIST)
-    @parametrize(remote_reads=[False, True])
+    @matrix(remote_reads=[False, True])
     def test_querying_remote_partitions(self, remote_reads):
         topic = TopicSpec(redpanda_remote_read=True,
                           redpanda_remote_write=True)
