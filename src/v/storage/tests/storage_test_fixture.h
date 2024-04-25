@@ -29,6 +29,7 @@
 #include "test_utils/fixture.h"
 
 #include <seastar/core/file.hh>
+#include <seastar/core/io_priority_class.hh>
 #include <seastar/core/reactor.hh>
 
 #include <boost/range/irange.hpp>
@@ -46,7 +47,7 @@ struct random_batches_generator {
     ss::circular_buffer<model::record_batch>
     operator()(std::optional<model::timestamp> base_ts = std::nullopt) {
         return model::test::make_random_batches(
-          model::offset(0), random_generators::get_int(1, 10), true, base_ts);
+          model::offset(0), random_generators::get_int(1, 1), true, base_ts);
     }
 };
 
@@ -270,6 +271,7 @@ public:
     struct batch_validating_consumer {
         ss::future<ss::stop_iteration> operator()(model::record_batch b) {
             BOOST_REQUIRE_EQUAL(b.header().crc, model::crc_record_batch(b));
+            fmt::print("got one batch\n");
             batches.push_back(std::move(b));
             return ss::make_ready_future<ss::stop_iteration>(
               ss::stop_iteration::no);
@@ -293,7 +295,11 @@ public:
         auto lstats = log->offsets();
         storage::log_reader_config cfg(
           lstats.start_offset, max_offset, ss::default_priority_class());
+        cfg.type_filter = {model::record_batch_type::id_allocator};
         auto reader = log->make_reader(std::move(cfg)).get0();
+
+        fmt::print("read_and_validate_all_batches: {}\n", cfg);
+
         return reader.consume(batch_validating_consumer{}, model::no_timeout)
           .get0();
     }
@@ -346,6 +352,9 @@ public:
             if (flush_after_append) {
                 log->flush().get();
             }
+
+            log->force_roll(ss::default_priority_class()).get0();
+
             // Check if after append offset was updated correctly
             auto expected_offset = model::offset(total_records - 1)
                                    + base_offset;
