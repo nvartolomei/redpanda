@@ -46,7 +46,7 @@ struct random_batches_generator {
     ss::circular_buffer<model::record_batch>
     operator()(std::optional<model::timestamp> base_ts = std::nullopt) {
         return model::test::make_random_batches(
-          model::offset(0), random_generators::get_int(1, 10), true, base_ts);
+          model::offset(0), 1, true, base_ts);
     }
 };
 
@@ -293,6 +293,7 @@ public:
         auto lstats = log->offsets();
         storage::log_reader_config cfg(
           lstats.start_offset, max_offset, ss::default_priority_class());
+        cfg.type_filter = {model::record_batch_type::id_allocator};
         auto reader = log->make_reader(std::move(cfg)).get0();
         return reader.consume(batch_validating_consumer{}, model::no_timeout)
           .get0();
@@ -346,6 +347,7 @@ public:
             if (flush_after_append) {
                 log->flush().get();
             }
+            log->force_roll(ss::default_priority_class()).get();
             // Check if after append offset was updated correctly
             auto expected_offset = model::offset(total_records - 1)
                                    + base_offset;

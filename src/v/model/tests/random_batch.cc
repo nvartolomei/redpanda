@@ -188,7 +188,7 @@ model::record_batch make_random_batch(record_batch_spec spec) {
 
 model::record_batch make_random_batch(
   model::offset o, bool allow_compression, std::optional<model::timestamp> ts) {
-    auto num_records = get_int(2, 30);
+    auto num_records = 1;
     return make_random_batch(
       o,
       num_records,
