@@ -331,6 +331,9 @@ replicated_partition::timequery(storage::timequery_config cfg) {
         // The start override doesn't affect the result of the timequery.
         co_return res;
     }
+
+    // Local storage already handles this correctly. After we implement
+    // min_offset clamping for tiered storage, we can remove this code.
     vlog(
       klog.debug,
       "{} timequery result {} clamped by start override, fetching result at "
