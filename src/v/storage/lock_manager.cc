@@ -44,8 +44,9 @@ lock_manager::range_lock(const timequery_config& cfg) {
       _set.end(),
       std::back_inserter(tmp),
       [&cfg](ss::lw_shared_ptr<segment>& s) {
-          // must be base offset
-          return s->offsets().get_base_offset() <= cfg.max_offset;
+          // Must be within offset bounds too.
+          return cfg.min_offset <= s->offsets().get_dirty_offset()
+                 && s->offsets().get_base_offset() <= cfg.max_offset;
       });
     return range(std::move(tmp));
 }

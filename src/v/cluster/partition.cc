@@ -508,8 +508,13 @@ partition::timequery(storage::timequery_config cfg) {
         // The query is ahead of the local data's start_timestamp: this
         // means it _might_ hit on local data: start_timestamp is not
         // precise, so once we query we might still fall back to cloud
-        // storage
-        auto result = co_await local_timequery(cfg);
+        // storage.
+        // We also need to adjust the lower bound for the local query.
+        auto local_query_cfg = cfg;
+        local_query_cfg.min_offset = std::max(
+          _raft->log()->from_log_offset(_raft->start_offset()),
+          local_query_cfg.min_offset);
+        auto result = co_await local_timequery(local_query_cfg);
         if (!result.has_value()) {
             // The local storage hit a case where it needs to fall back
             // to querying cloud storage.
@@ -571,13 +576,9 @@ partition::cloud_storage_timequery(storage::timequery_config cfg) {
 
 ss::future<std::optional<storage::timequery_result>>
 partition::local_timequery(storage::timequery_config cfg) {
-    vlog(
-      clusterlog.debug,
-      "timequery (raft) {} t={} max_offset(k)={}",
-      _raft->ntp(),
-      cfg.time,
-      cfg.max_offset);
+    vlog(clusterlog.debug, "timequery (raft) ", _raft->ntp(), cfg);
 
+    cfg.min_offset = _raft->log()->to_log_offset(cfg.min_offset);
     cfg.max_offset = _raft->log()->to_log_offset(cfg.max_offset);
 
     auto result = co_await _raft->timequery(cfg);
@@ -651,8 +652,10 @@ partition::local_timequery(storage::timequery_config cfg) {
 
         vlog(
           clusterlog.debug,
-          "timequery (raft) {} t={} max_offset(r)={} result(r)={}",
+          "timequery (raft) {} min_offset(r)={} t={} max_offset(r)={} "
+          "result(r)={}",
           _raft->ntp(),
+          cfg.min_offset,
           cfg.time,
           cfg.max_offset,
           result->offset);

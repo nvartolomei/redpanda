@@ -267,7 +267,10 @@ private:
  * remote_partition, to seek to their final result after finding
  * the batch.
  */
-timequery_result
-batch_timequery(const model::record_batch& b, model::timestamp t);
+timequery_result batch_timequery(
+  const model::record_batch& b,
+  model::offset min_offset,
+  model::timestamp t,
+  model::offset max_offset);
 
 } // namespace storage
