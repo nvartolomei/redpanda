@@ -24,8 +24,12 @@ class KafkaCat:
 
     This tools is useful because it offers a JSON output format.
     """
-    def __init__(self, redpanda: RedpandaServiceForClients):
+    def __init__(self,
+                 redpanda: RedpandaServiceForClients,
+                 /,
+                 num_retries: int = 10):
         self._redpanda = redpanda
+        self._num_retries = num_retries
 
     def metadata(self):
         return self._cmd(["-L"])
@@ -62,7 +66,7 @@ class KafkaCat:
         return res
 
     def _cmd_raw(self, cmd: list[str], input: str | None = None):
-        for retry in reversed(range(10)):
+        for retry in reversed(range(self._num_retries)):
             cfg = self._redpanda.kafka_client_security()
             if cfg.sasl_enabled:
                 if cfg.mechanism == 'GSSAPI':
