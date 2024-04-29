@@ -25,7 +25,8 @@ from rptest.clients.rpk import RpkTool
 from rptest.clients.kafka_cat import KafkaCat
 from rptest.clients.rpk_remote import RpkRemoteTool
 from rptest.util import (expect_exception, firewall_blocked, wait_until,
-                         segments_count, wait_for_local_storage_truncate)
+                         segments_count, wait_for_local_storage_truncate,
+                         wait_until_result)
 
 from rptest.services.kgo_verifier_services import KgoVerifierProducer
 from rptest.utils.si_utils import BucketView, NTP
@@ -537,29 +538,29 @@ class TimeQueryTest(RedpandaTest, BaseTimeQuery):
                                         topic=topic.name,
                                         target_bytes=local_retention)
 
-        # Update the retention to trigger archive retention mechanisms but
-        # keep firewall blocked to prevent garbage collection.
-        with firewall_blocked(
-                self.redpanda.nodes,
-                self.si_settings.cloud_storage_api_endpoint_port):
-            self.client().alter_topic_config(topic.name, 'retention.bytes',
-                                             topic_retention)
-            self.logger.info("Waiting for start offset to advance...")
-            wait_until(
-                lambda: next(rpk.describe_topic(topic.name)).start_offset > 0,
-                timeout_sec=120,
-                backoff_sec=5,
-                err_msg="Start offset did not advance")
+        # Set timeout to 0 to prevent the cloud storage housekeeping from
+        # running, triggering gc, and advancing clean offset.
+        self.redpanda.set_cluster_config(
+            {"cloud_storage_manifest_upload_timeout_ms": 0})
 
-            # Query below valid timestamps the offset of the first message.
-            kcat = KafkaCat(self.redpanda, num_retries=2)
+        self.client().alter_topic_config(topic.name, 'retention.bytes',
+                                         topic_retention)
+        self.logger.info("Waiting for start offset to advance...")
+        start_offset = wait_until_result(
+            lambda: next(rpk.describe_topic(topic.name)).start_offset > 0,
+            timeout_sec=120,
+            backoff_sec=5,
+            err_msg="Start offset did not advance")
 
-            # This fails for now until garbage collection is run.
-            # Tech debt.
-            with expect_exception(subprocess.CalledProcessError,
-                                  lambda e: True):
-                offset = kcat.query_offset(topic.name, 0, timestamps[0] - 1000)
-                assert offset > timestamps[0]
+        start_offset = next(rpk.describe_topic(topic.name)).start_offset
+
+        # Query below valid timestamps the offset of the first message.
+        kcat = KafkaCat(self.redpanda, num_retries=2)
+
+        # This fails for now until garbage collection is run.
+        # Tech debt.
+        offset = kcat.query_offset(topic.name, 0, timestamps[0] - 1000)
+        assert offset == start_offset, f"Expected {offset} == {start_offset}"
 
 
 class TimeQueryKafkaTest(Test, BaseTimeQuery):
