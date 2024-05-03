@@ -82,7 +82,7 @@ def decode_record(batch, header, record):
     is_ctrl = attrs["control_batch"]
     is_tx_ctrl = is_txn and is_ctrl
     if is_tx_ctrl:
-        record_dict["type"] = self.get_control_record_type(record.key)
+        record_dict["type"] = get_control_record_type(record.key)
 
     kr = Reader(BytesIO(record.key))
     vr = Reader(BytesIO(record.value))
@@ -97,17 +97,18 @@ def decode_record(batch, header, record):
     return record_dict
 
 
+def get_control_record_type(key):
+    rdr = Reader(BytesIO(key))
+    rdr.skip(2)  # skip the 16bit version.
+    # Encoded as big endian
+    type_rdr = Reader(BytesIO(struct.pack(">h", rdr.read_int16())))
+    return KafkaControlRecordType(type_rdr.read_int16()).name
+
+
 class KafkaLog:
     def __init__(self, ntp, headers_only):
         self.ntp = ntp
         self.headers_only = headers_only
-
-    def get_control_record_type(self, key):
-        rdr = Reader(BytesIO(key))
-        rdr.skip(2)  # skip the 16bit version.
-        # Encoded as big endian
-        type_rdr = Reader(BytesIO(struct.pack(">h", rdr.read_int16())))
-        return KafkaControlRecordType(type_rdr.read_int16()).name
 
     def decode(self):
         self.results = []

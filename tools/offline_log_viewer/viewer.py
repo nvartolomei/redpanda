@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
+import itertools
+import json
+import logging
 import os
+import struct
 import sys
 from os.path import join
 
-from controller import ControllerLog
 from consumer_groups import GroupsLog
 from consumer_offsets import OffsetsLog
-from topic_manifest import decode_topic_manifest, decode_topic_manifest_to_legacy_v1_json
-from tx_coordinator import TxLog
-
-import itertools
-from storage import Store
+from controller import ControllerLog
+from kafka import KafkaLog, decode_record
 from kvstore import KvStore
-from kafka import KafkaLog
-import logging
-import json
+from storage import Segment, Store
+from topic_manifest import (
+    decode_topic_manifest,
+    decode_topic_manifest_to_legacy_v1_json,
+)
+from tx_coordinator import TxLog
 
 logger = logging.getLogger('viewer')
 
@@ -118,6 +121,46 @@ def print_tx_coordinator(store):
     logger.info("")
 
 
+def print_segment(path, delta=1489):
+    s = Segment(path)
+    for batch in s:
+        header = batch.header_dict()
+        if header['type_name'] in [
+                "raft_configuration", "archival_metadata", "version_fence",
+                "prefix_truncate"
+        ]:
+            delta += header["record_count"]
+        else:
+            print("kafka offset {}; raft offset {}; delta {}".format(
+                header['base_offset'] - delta, header['base_offset'], delta))
+
+            if header['type_name'] == 'raft_data' and header['expanded_attrs'][
+                    'transactional'] and header['expanded_attrs'][
+                        'control_batch']:
+                for r in batch:
+                    # This is big endian! Using kafka serialization format.
+                    outcome = struct.unpack('>hh', r.key[:4])
+                    if outcome[1] == 0:
+                        print("TX OUTCOME")
+                        print("     ABORT")
+                    elif outcome[1] == 1:
+                        print("TX OUTCOME")
+                        print("     COMMIT")
+                    else:
+                        print("TX OUTCOME")
+                        print("     UNKNOWN", outcome[1])
+
+            if header['type_name'] == 'tx_fence':
+                print("TX FENCE : TX START")
+                for r in batch:
+                    # Low endian. Redpanda ADL serialization format.
+                    print(struct.unpack('<bq', r.key[:9]))
+                    print(struct.unpack('<bqql', r.value[:21]))
+
+            print(json.dumps(header, indent=2))
+    logger.info("")
+
+
 def validate_path(options):
     path = options.path
     if not os.path.exists(path):
@@ -163,7 +206,8 @@ def main():
                                 'controller', 'kvstore', 'kafka',
                                 'consumer_offsets', 'legacy-group',
                                 'kafka_records', 'tx_coordinator',
-                                'topic_manifest', 'topic_manifest_legacy'
+                                'topic_manifest', 'topic_manifest_legacy',
+                                'segment'
                             ],
                             required=True,
                             help='operation to execute')
@@ -195,6 +239,10 @@ def main():
     else:
         logging.basicConfig(level="INFO")
     logger.info(f"starting metadata viewer with options: {options}")
+
+    if options.type == "segment":
+        print_segment(options.path)
+        sys.exit(0)
 
     validate_path(options)
 
