@@ -14,6 +14,7 @@
 #include "base/vlog.h"
 #include "config/configuration.h"
 #include "reflection/adl.h"
+#include "ssx/future-util.h"
 #include "ssx/semaphore.h"
 #include "storage/chunk_cache.h"
 #include "storage/logger.h"
@@ -23,6 +24,11 @@
 #include <seastar/core/align.hh>
 #include <seastar/core/future-util.hh>
 #include <seastar/core/future.hh>
+#include <seastar/core/lowres_clock.hh>
+#include <seastar/core/semaphore.hh>
+#include <seastar/core/shared_future.hh>
+#include <seastar/core/shared_ptr.hh>
+#include <seastar/core/when_all.hh>
 
 #include <fmt/format.h>
 
@@ -159,10 +165,10 @@ ss::future<> segment_appender::do_append(const char* buf, size_t n) {
             continue;
         }
 
-        if (next_committed_offset() + n > _fallocation_offset) {
-            co_await do_next_adaptive_fallocation();
-            continue;
-        }
+        // if (next_committed_offset() + n > _fallocation_offset) {
+        //     co_await do_next_adaptive_fallocation();
+        //     continue;
+        // }
 
         size_t written = 0;
         if (likely(_head)) {
@@ -181,7 +187,15 @@ ss::future<> segment_appender::do_append(const char* buf, size_t n) {
         auto units = co_await ss::get_units(_concurrent_flushes, 1);
         units.return_all();
 
+        auto c_start = ss::lowres_clock::now();
         auto chunk = co_await internal::chunks().get();
+        auto c_dur_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          ss::lowres_clock::now() - c_start)
+                          .count();
+        if (c_dur_ms > 100) {
+            vlog(stlog.warn, "VVV: chunk get took {}ms", c_dur_ms);
+        }
+        vlog(stlog.debug, "VVV: chunk get took {}ms", c_dur_ms);
         vassert(!_head, "cannot overwrite existing chunk");
         _head = std::move(chunk);
 
@@ -302,6 +316,9 @@ ss::future<> segment_appender::truncate(size_t n) {
       .then([this, n] {
           _committed_offset = n;
           _fallocation_offset = n;
+          if (_fallocation_op.has_value()) {
+              _fallocation_op->offset = n;
+          }
           _flushed_offset = n;
           _stable_offset = n;
           auto f = ss::now();
@@ -337,10 +354,21 @@ ss::future<> segment_appender::do_next_adaptive_fallocation() {
         return ss::make_ready_future<>();
     }
 
+    auto lock_start_t = ss::lowres_clock::now();
+
     return ss::with_semaphore(
              _concurrent_flushes,
              ss::semaphore::max_counter(),
-             [this, step]() mutable {
+             [this, step, lock_start_t]() mutable {
+                 auto lock_dur_ms
+                   = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       ss::lowres_clock::now() - lock_start_t)
+                       .count();
+
+                 if (lock_dur_ms > 100) {
+                     vlog(stlog.warn, "VVV: lock took {}ms", lock_dur_ms);
+                 }
+
                  check_no_dispatched_writes();
                  // step - compute step rounded to alignment(4096); this is
                  // needed because during a truncation the follow up fallocation
@@ -359,11 +387,24 @@ ss::future<> segment_appender::do_next_adaptive_fallocation() {
                    _committed_offset);
                  return _out.allocate(_fallocation_offset, step)
                    .then([this, step] {
+                       auto start = ss::lowres_clock::now();
                        // ss::file::allocate does not adjust logical file size
                        // hence we need to do that explicitly with an extra
                        // truncate. This allows for more efficient writes.
                        // https://github.com/redpanda-data/redpanda/pull/18598.
-                       return _out.truncate(_fallocation_offset + step);
+                       return _out.truncate(_fallocation_offset + step)
+                         .finally([start] {
+                             auto dur_ms = std::chrono::duration_cast<
+                                             std::chrono::milliseconds>(
+                                             ss::lowres_clock::now() - start)
+                                             .count();
+                             if (dur_ms > 100) {
+                                 vlog(
+                                   stlog.warn,
+                                   "VVV: truncate took {}ms",
+                                   dur_ms);
+                             }
+                         });
                    })
                    .then([this, step] { _fallocation_offset += step; });
              })
@@ -376,6 +417,71 @@ ss::future<> segment_appender::do_next_adaptive_fallocation() {
             e,
             *this);
       });
+}
+
+void segment_appender::dispatch_next_adaptive_fallocation(size_t min_offset) {
+    auto prev_f = _fallocation_op.has_value() ? _fallocation_op->f.get_future()
+                                              : ss::make_ready_future<>();
+    auto prev_o = _fallocation_op.has_value() ? _fallocation_op->offset : 0;
+
+    auto step = _opts.resources.get_falloc_step(_opts.segment_size);
+
+    if (prev_o + step < min_offset) {
+        step = min_offset - prev_o;
+    }
+
+    // step - compute step rounded to alignment(4096); this is
+    // needed because during a truncation the follow up fallocation
+    // might not be page aligned
+    if (prev_o % fallocation_alignment != 0) {
+        // add left over bytes to a full page
+        step += fallocation_alignment - (prev_o % fallocation_alignment);
+    }
+
+    auto p = ss::make_shared<ss::shared_promise<>>();
+    _fallocation_op = {.offset = prev_o + step, .f = p->get_shared_future()};
+
+    // TODO(nv): Understand why waiting on prev_f and taking the semaphore later
+    // causes tests to hang.
+
+    // In truncate, assert than there are no inflight writes whatsoever rather
+    // than no dispatched writes. Enqueued writes shouldn't be ok.
+
+    ssx::background = ss::with_semaphore(
+                        _concurrent_flushes,
+                        1,
+                        [this,
+                         prev_o,
+                         step,
+                         prev_f = std::move(prev_f),
+                         p = std::move(p)]() mutable {
+                            return prev_f
+                              .then([this, prev_o, step] {
+                                  return _out.allocate(prev_o, step);
+                              })
+
+                              .then([this, prev_o, step] {
+                                  // ss::file::allocate does not adjust
+                                  // logical file size hence we need to do
+                                  // that explicitly with an extra
+                                  // truncate. This allows for more
+                                  // efficient writes.
+                                  // https://github.com/redpanda-data/redpanda/pull/18598.
+                                  return _out.truncate(prev_o + step);
+                              })
+                              .then([p = std::move(p)] { p->set_value(); });
+                        })
+                        .handle_exception([this](std::exception_ptr e) {
+                            vassert(
+                              false,
+                              "We failed to fallocate file. This usually means "
+                              "we have ran out "
+                              "of disk space. Please check your data partition "
+                              "and ensure you "
+                              "have enough space. Error: {} - {}",
+                              e,
+                              *this);
+                        });
 }
 
 ss::future<> segment_appender::maybe_advance_stable_offset(
@@ -522,7 +628,32 @@ void segment_appender::dispatch_background_head_write() {
         _prev_head_write = ss::make_lw_shared<ssx::semaphore>(1, head_sem_name);
     }
 
-    if (!_inflight.empty() && _inflight.back()->try_merge(entry, prior_co)) {
+    bool same_falloc_window = true;
+    if (!_fallocation_op.has_value()) {
+        // This is the first write to the segment, so we need the initial
+        // fallocate.
+        // TODO(nv): rename to `dispatch_...`
+        dispatch_next_adaptive_fallocation(entry.committed_offset);
+    } else if (_fallocation_op->offset < entry.committed_offset) {
+        // Write is beyond the current fallocate window. Schedule a new
+        // fallocate operation.
+        dispatch_next_adaptive_fallocation(entry.committed_offset);
+
+        // Do not merge writes that span a fallocate boundary. We can't
+        // elegantly schedule the previous write to be dispatched after the
+        // current fallocate, so we just don't merge them.
+        same_falloc_window = false;
+    }
+
+    // Wire
+    auto falloc_f = _fallocation_op->f.get_future();
+
+    // TODO(nv): Where to sequence the fallocation if previous writes can be
+    // expanded? Maybe we should disallow merging writes if they span a
+    // fallocation boundary.
+    if (
+      same_falloc_window && !_inflight.empty()
+      && _inflight.back()->try_merge(entry, prior_co)) {
         // Yay! The latest in-flight write is still queued (i.e., has not
         // been dispatched to the disk) so we just append this write
         // to that entry.
@@ -545,8 +676,14 @@ void segment_appender::dispatch_background_head_write() {
     (void)ss::with_semaphore(
       _concurrent_flushes,
       1,
-      [w, this, head_sem, units = std::move(units)]() mutable {
-          return units
+      [w,
+       this,
+       head_sem,
+       units = std::move(units),
+       falloc_f = std::move(falloc_f)]() mutable {
+          return falloc_f
+            .then(
+              [units = std::move(units)]() mutable { return std::move(units); })
             .then([this, w](ssx::semaphore_units u) mutable {
                 const auto dma_size = w->chunk_end - w->chunk_begin;
 

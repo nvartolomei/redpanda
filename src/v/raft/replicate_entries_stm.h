@@ -130,6 +130,7 @@ private:
     ss::lw_shared_ptr<std::vector<ssx::semaphore_units>> _units;
     std::optional<result<storage::append_result>> _append_result;
     uint16_t _requests_count = 0;
+    clock_type::time_point _start_time;
 };
 
 } // namespace raft

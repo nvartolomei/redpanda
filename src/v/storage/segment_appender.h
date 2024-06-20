@@ -27,6 +27,7 @@
 #include <seastar/core/file.hh>
 #include <seastar/core/fstream.hh>
 #include <seastar/core/iostream.hh>
+#include <seastar/core/shared_future.hh>
 #include <seastar/core/sstring.hh>
 
 #include <iosfwd>
@@ -142,6 +143,7 @@ private:
 
     void dispatch_background_head_write();
     ss::future<> do_next_adaptive_fallocation();
+    void dispatch_next_adaptive_fallocation(size_t min_offset);
     ss::future<> hydrate_last_half_page();
     ss::future<> do_truncation(size_t);
     ss::future<> do_append(const char* buf, size_t n);
@@ -174,6 +176,13 @@ private:
     bool _closed{false};
     size_t _committed_offset{0};
     size_t _fallocation_offset{0};
+
+    struct fallocation_op {
+        size_t offset;
+        ss::shared_future<> f;
+    };
+    std::optional<fallocation_op> _fallocation_op;
+
     size_t _bytes_flush_pending{0};
     ssx::semaphore _concurrent_flushes;
     chunk_ptr _head;

@@ -255,6 +255,7 @@ inline bool replicate_entries_stm::should_skip_follower_request(vnode id) {
 
 ss::future<result<replicate_result>> replicate_entries_stm::apply(units_t u) {
     // first append lo leader log, no flushing
+    _start_time = clock_type::now();
     auto cfg = _ptr->config();
     cfg.for_each_broker_id([this](const vnode& rni) {
         // suppress follower heartbeat, before appending to self log

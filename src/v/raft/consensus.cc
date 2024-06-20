@@ -47,6 +47,7 @@
 #include <seastar/core/fstream.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/gate.hh>
+#include <seastar/core/lowres_clock.hh>
 #include <seastar/core/metrics.hh>
 #include <seastar/core/semaphore.hh>
 #include <seastar/util/defer.hh>
@@ -230,6 +231,7 @@ void consensus::maybe_step_down() {
             // check again while holding a lock
             if (_vstate == vote_state::leader) {
                 auto majority_hbeat = majority_heartbeat();
+
                 if (majority_hbeat < _became_leader_at) {
                     majority_hbeat = _became_leader_at;
                 }
@@ -2197,6 +2199,7 @@ consensus::do_append_entries(append_entries_request&& r) {
             // but can inflate the number of recovering partitions
             // statistic a bit).
         }
+
         co_return make_append_entries_reply(reply.target_node_id, ofs);
     } catch (...) {
         vlog(
@@ -2710,7 +2713,12 @@ ss::future<consensus::flushed> consensus::flush_log() {
     const auto prior_truncations = _log->get_log_truncation_counter();
     _probe->log_flushed();
     _pending_flush_bytes = 0;
+    auto start = ss::lowres_clock::now();
     co_await _log->flush();
+    vlog(
+      _ctxlog.info,
+      "VVV: Flushed log in {}ms\n",
+      (ss::lowres_clock::now() - start) / 1ms);
     _last_flush_time = clock_type::now();
     const auto lstats = _log->offsets();
     /**

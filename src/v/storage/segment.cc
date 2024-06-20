@@ -480,7 +480,6 @@ ss::future<> segment::compaction_index_batch(const model::record_batch& b) {
     if (!internal::is_compactible(b)) {
         co_return;
     }
-
     if (!b.compressed()) {
         co_return co_await do_compaction_index_batch(b);
     }
