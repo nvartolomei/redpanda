@@ -2811,6 +2811,9 @@ ss::future<storage::append_result> consensus::disk_append(
               std::tuple<ret_t, std::vector<offset_configuration>> t) {
           auto& [ret, configurations] = t;
           _pending_flush_bytes += ret.byte_size;
+
+          auto f = ss::now();
+
           if (should_update_last_quorum_idx) {
               /**
                * We have to update last quorum replicated index before we
@@ -2823,7 +2826,9 @@ ss::future<storage::append_result> consensus::disk_append(
               // Here are are appending entries without a flush, signal the
               // flusher incase we hit the thresholds, particularly unflushed
               // bytes.
-              maybe_schedule_flush();
+              if (_pending_flush_bytes >= _max_pending_flush_bytes) {
+                  f = f.then([this] { return flush_log().discard_result(); });
+              }
           }
           // TODO
           // if we rolled a log segment. write current configuration
@@ -2833,10 +2838,14 @@ ss::future<storage::append_result> consensus::disk_append(
           // for quorum_ack it flush in parallel to dispatching RPCs
           // to followers for other consistency flushes are done
           // separately.
-          auto f = ss::now();
           if (!configurations.empty()) {
               // we can use latest configuration to update follower stats
-              f = _configuration_manager.add(std::move(configurations))
+              f = f.then(
+                     [this,
+                      configurations = std::move(configurations)]() mutable {
+                         return _configuration_manager.add(
+                           std::move(configurations));
+                     })
                     .then([this] {
                         update_follower_stats(
                           _configuration_manager.get_latest());
