@@ -121,7 +121,7 @@ def print_tx_coordinator(store):
     logger.info("")
 
 
-def print_segment(path, delta=1489):
+def print_segment(path, delta=88605):
     s = Segment(path)
     for batch in s:
         header = batch.header_dict()
@@ -131,6 +131,9 @@ def print_segment(path, delta=1489):
         ]:
             delta += header["record_count"]
         else:
+            if header['base_offset'] - delta != 193190311010:
+                continue
+
             print("kafka offset {}; raft offset {}; delta {}".format(
                 header['base_offset'] - delta, header['base_offset'], delta))
 
@@ -158,6 +161,8 @@ def print_segment(path, delta=1489):
                     print(struct.unpack('<bqql', r.value[:21]))
 
             print(json.dumps(header, indent=2))
+            for r in batch:
+                print(r.value)
     logger.info("")
 
 

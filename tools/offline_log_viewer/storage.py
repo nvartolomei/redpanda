@@ -1,5 +1,6 @@
 import collections
 from enum import Enum
+import gzip
 import os
 import re
 from os.path import join
@@ -230,6 +231,13 @@ class Batch:
         return self.header.record_count
 
     def __iter__(self):
+        comp_typ = Batch.CompressionType(self.header.attrs
+                                         & Batch.compression_mask)
+        if comp_typ == Batch.CompressionType.gzip:
+            self.records = gzip.decompress(self.records)
+            print(self.records)
+        elif comp_typ != Batch.CompressionType.none:
+            raise NotImplementedError("Compression not supported")
         return RecordIter(self.header.record_count, self.records)
 
 
