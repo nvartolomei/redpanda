@@ -19,6 +19,7 @@
 #include "model/metadata.h"
 #include "security/acl_store.h"
 #include "security/credential_store.h"
+#include "types.h"
 
 #include <absl/container/flat_hash_map.h>
 
@@ -141,11 +142,18 @@ controller_snapshot_reconciler::get_actions(
                 actions.remote_topics.emplace_back(std::move(new_config));
                 continue;
             };
-            // Either this is a read replica or no metadata is expected to exist
-            // in tiered storage. Just create the topic.
+            // TODO(nv): Properly handle cloud topics!
+            if (tp_ns.tp().ends_with(("_ct"))) {
+                auto new_config = tp_config;
+                new_config.properties.cloud_topic_recovery = true;
+                actions.cloud_topics.emplace_back(std::move(new_config));
+                continue;
+            }
+            // Either this is a read replica or no metadata is expected to
+            // exist in tiered storage. Just create the topic.
             actions.local_topics.emplace_back(tp_config);
         }
-        if (!actions.remote_topics.empty()) {
+        if (!actions.remote_topics.empty() || !actions.cloud_topics.empty()) {
             actions.stages.emplace_back(
               recovery_stage::recovered_remote_topic_data);
         }
@@ -153,7 +161,6 @@ controller_snapshot_reconciler::get_actions(
             actions.stages.emplace_back(recovery_stage::recovered_topic_data);
         }
     }
-
     // Always include this final stage, indicating the end of the recovering of
     // the controller snapshot. That way, if we start reconciling while at or
     // past this state, we don't need to redownload the controller snapshot.

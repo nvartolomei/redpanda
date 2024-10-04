@@ -142,7 +142,12 @@ ss::future<std::vector<topic_result>> topics_frontend::create_topics(
          * (ntp_config::default_remote_delete) on the construction of
          * topic_properties(), so there is no need to overwrite it here.
          */
-        if (!tp.cfg.properties.shadow_indexing.has_value()) {
+
+        // TODO(nv)
+        if (tp.cfg.tp_ns.tp().ends_with("_ct")) {
+            // Skip shadow indexing properties for cloud topics.
+            continue;
+        } else if (!tp.cfg.properties.shadow_indexing.has_value()) {
             tp.cfg.properties.shadow_indexing
               = _metadata_cache.get_default_shadow_indexing_mode();
         }
@@ -430,6 +435,11 @@ errc topics_frontend::validate_topic_configuration(
 ss::future<topic_result> topics_frontend::do_create_topic(
   custom_assignable_topic_configuration assignable_config,
   model::timeout_clock::time_point timeout) {
+    // TODO(nv) Testing
+    if (assignable_config.cfg.tp_ns.tp() == "foo_ct") {
+        assignable_config.cfg.properties.cloud_topic_recovery = true;
+    }
+
     auto& tp_ns = assignable_config.cfg.tp_ns;
     if (_topics.local().contains(tp_ns)) {
         vlog(

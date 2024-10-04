@@ -20,6 +20,7 @@ redpanda_cc_library(
         "//src/v/cloud_storage",
         "//src/v/cloud_storage_clients",
         "//src/v/cloud_topics/reconciler",
+        "//src/v/cloud_topics/recovery:snapshot_manager",
         "//src/v/cluster",
         "//src/v/cluster:offsets_lookup",
         "//src/v/compression",

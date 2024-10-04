@@ -22,6 +22,12 @@ redpanda_cc_library(
 )
 
 redpanda_cc_library(
+    name = "fwd",
+    hdrs = ["fwd.h"],
+    visibility = ["//visibility:public"],
+)
+
+redpanda_cc_library(
     name = "raft",
     srcs = [
         "append_entries_buffer.cc",

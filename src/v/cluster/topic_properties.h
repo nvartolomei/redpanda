@@ -122,6 +122,10 @@ struct topic_properties
     tristate<size_t> retention_bytes{std::nullopt};
     tristate<std::chrono::milliseconds> retention_duration{std::nullopt};
     std::optional<bool> recovery;
+    // cloud_topic_recovery flag signals redpanda that we are in the process
+    // of recovering the cluster with cloud topics. This flag can't be set
+    // by the user.
+    std::optional<bool> cloud_topic_recovery;
     std::optional<model::shadow_indexing_mode> shadow_indexing;
     std::optional<bool> read_replica;
     std::optional<ss::sstring> read_replica_bucket;
@@ -226,7 +230,8 @@ struct topic_properties
           remote_label,
           remote_topic_namespace_override,
           iceberg_enabled,
-          leaders_preference);
+          leaders_preference,
+          cloud_topic_recovery);
     }
 
     friend bool operator==(const topic_properties&, const topic_properties&)

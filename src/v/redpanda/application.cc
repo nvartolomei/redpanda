@@ -2009,6 +2009,15 @@ void application::wire_up_redpanda_services(
           cloud_storage_clients::bucket_name(
             config::shard_local_cfg().cloud_storage_bucket().value()))
           .get();
+
+        construct_service(
+          _ct_snapshot_manager,
+          ss::sharded_parameter([this] { return &partition_manager.local(); }),
+          ss::sharded_parameter([this] { return &raft_group_manager.local(); }),
+          ss::sharded_parameter([this] { return &cloud_io.local(); }),
+          cloud_storage_clients::bucket_name(
+            config::shard_local_cfg().cloud_storage_bucket().value()))
+          .get();
     }
 
     // group membership
@@ -3171,6 +3180,11 @@ void application::start_runtime_services(
         _reconciler
           .invoke_on_all(
             &experimental::cloud_topics::reconciler::reconciler::start)
+          .get();
+
+        _ct_snapshot_manager
+          .invoke_on_all(
+            &experimental::cloud_topics::recovery::snapshot_manager::start)
           .get();
     }
 }
