@@ -16,6 +16,7 @@ redpanda_cc_library(
         "//src/v/iceberg:field_collecting_visitor",
         "//src/v/iceberg:schema",
         "//src/v/iceberg:transaction",
+        "//src/v/container:fragmented_vector",
     ],
     include_prefix = "datalake",
     visibility = [":__subpackages__"],

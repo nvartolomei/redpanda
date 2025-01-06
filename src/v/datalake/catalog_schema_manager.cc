@@ -10,6 +10,7 @@
 #include "datalake/catalog_schema_manager.h"
 
 #include "base/vlog.h"
+#include "container/fragmented_vector.h"
 #include "datalake/logger.h"
 #include "datalake/table_definition.h"
 #include "iceberg/compatibility.h"
@@ -87,6 +88,12 @@ fill_field_ids(iceberg::struct_type& dest, const iceberg::struct_type& source) {
     // We successfully filled all the fields in the destination.
     return std::nullopt;
 }
+
+chunked_vector<ss::sstring> default_table_namespace() {
+    // TODO: namespace as a topic property? Keep it in the table metadata?
+    return {"redpanda"};
+}
+
 } // namespace
 
 std::ostream& operator<<(std::ostream& o, const schema_manager::errc& e) {
@@ -234,8 +241,7 @@ catalog_schema_manager::get_ids_from_table_meta(
 iceberg::table_identifier
 schema_manager::table_id_for_topic(const model::topic& t) const {
     return iceberg::table_identifier{
-      // TODO: namespace as a topic property? Keep it in the table metadata?
-      .ns = {"redpanda"},
+      .ns = default_table_namespace(),
       .table = t,
     };
 }
