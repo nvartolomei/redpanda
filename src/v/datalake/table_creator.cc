@@ -62,10 +62,25 @@ direct_table_creator::ensure_table(
 
     // TODO(iceberg-dlq): Ensure DLQ table exists.
     //   - Applies only to schemafull topics.
-
+    //
     // TODO(iceberg-dlq): Where to drop DLQ table? Would be great to have
     //   a table manager class that handles both the creation and deletion
     //   so that both are encapsulated in the same place.
+    if (val_type.has_value()) {
+        auto dlq_table_id = schema_mgr_.dlq_table_id_for_topic(topic);
+        auto dlq_res = co_await schema_mgr_.ensure_table_schema(
+          dlq_table_id, key_value_translator{}.build_type(std::nullopt).type);
+        if (dlq_res.has_error()) {
+            switch (dlq_res.error()) {
+            case schema_manager::errc::not_supported:
+                co_return errc::incompatible_schema;
+            case schema_manager::errc::failed:
+                co_return errc::failed;
+            case schema_manager::errc::shutting_down:
+                co_return errc::shutting_down;
+            }
+        }
+    }
 
     co_return std::nullopt;
 }

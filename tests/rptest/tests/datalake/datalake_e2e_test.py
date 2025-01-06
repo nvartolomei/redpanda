@@ -110,6 +110,9 @@ class DatalakeE2ETests(RedpandaTest):
             avro_serde_client.wait()
             dl.wait_for_translation(self.topic_name, msg_count=count)
 
+            # Ensure DLQ table exists
+            dl.wait_for_iceberg_table('redpanda', f"{table_name}_dlq", 10, 1)
+
             if query_engine == QueryEngineType.TRINO:
                 trino = dl.trino()
                 trino_expected_out = [(

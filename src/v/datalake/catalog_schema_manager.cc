@@ -246,4 +246,15 @@ schema_manager::table_id_for_topic(const model::topic& t) const {
     };
 }
 
+iceberg::table_identifier
+schema_manager::dlq_table_id_for_topic(const model::topic& t) const {
+    return iceberg::table_identifier{
+      .ns = default_table_namespace(),
+      // TODO(iceberg-dlq): replace _ with ~
+      //   Depends on making our filesystem catalog supporting special
+      //   characters.
+      .table = fmt::format("{}_dlq", t),
+    };
+}
+
 } // namespace datalake

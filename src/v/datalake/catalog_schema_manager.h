@@ -38,6 +38,8 @@ public:
     virtual ~schema_manager() = default;
 
     iceberg::table_identifier table_id_for_topic(const model::topic& t) const;
+    iceberg::table_identifier
+    dlq_table_id_for_topic(const model::topic& t) const;
 };
 
 class simple_schema_manager : public schema_manager {
