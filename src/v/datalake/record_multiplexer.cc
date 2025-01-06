@@ -258,6 +258,10 @@ record_multiplexer::handle_invalid_record(
     vlog(_log.debug, "Dropping invalid record at offset {}", offset);
     // TODO: add a metric!
     // TODO: dead-letter table?
+
+    // TODO(iceberg-dlq): Return valid and invalid records so that they can be
+    //   committed to the main table and DLQ respectively.
+
     co_return std::nullopt;
 }
 } // namespace datalake
