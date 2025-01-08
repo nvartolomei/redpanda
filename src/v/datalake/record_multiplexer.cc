@@ -231,43 +231,41 @@ record_multiplexer::end_of_stream() {
     if (_error) {
         co_return *_error;
     }
+
+    // TODO(iceberg-dlq): We need a better condition here or a bit later so that
+    // we know whether we need to drain the writers vs dlq writers or both.
+    //  - UNIT TEST.
+
     if (!_result) {
         // no batches were processed.
         co_return writer_error::no_data;
     }
 
-    auto collect_files = [](datalake::partitioning_writer&& writer, auto& sink)
-      -> ss::future<std::optional<writer_error>> {
-        auto res = co_await std::move(writer).finish();
-        if (res.has_error()) {
-            co_return res.error();
-        } else {
-            auto& files = res.value();
-            std::move(files.begin(), files.end(), std::back_inserter(sink));
-        }
-
-        co_return std::nullopt;
-    };
-
     auto writers = std::move(_writers);
     for (auto& [id, writer] : writers) {
-        if (
-          auto maybe_err = co_await collect_files(
-            std::move(*writer), _result->data_files)) {
-            _error = maybe_err.value();
+        auto res = co_await std::move(*writer).finish();
+        if (res.has_error()) {
+            _error = res.error();
             vlog(_log.warn, "Error finishing writer for table: {}", _error);
             continue;
         }
+        auto& files = res.value();
+        std::move(
+          files.begin(), files.end(), std::back_inserter(_result->data_files));
     }
 
     if (_dlq_writer) {
-        if (
-          auto maybe_err = co_await collect_files(
-            std::move(*std::exchange(_dlq_writer, nullptr)),
-            _result->dlq_data_files)) {
-            vlog(_log.warn, "Error finishing dlq writer for table: {}", _error);
-            _error = maybe_err.value();
+        auto w = std::exchange(_dlq_writer, nullptr);
+        auto res = co_await std::move(*w).finish();
+        if (res.has_error()) {
+            _error = res.error();
+            vlog(_log.warn, "Error finishing writer for table: {}", _error);
         }
+        auto& files = res.value();
+        std::move(
+          files.begin(),
+          files.end(),
+          std::back_inserter(_result->dlq_data_files));
     }
 
     if (_error) {
@@ -293,13 +291,14 @@ record_multiplexer::handle_invalid_record(
     // TODO(iceberg-dlq): Return valid and invalid records so that they can be
     //   committed to the main table and DLQ respectively.
 
+    auto kvt = key_value_translator{};
+
     if (!_dlq_writer) {
         _dlq_writer = std::make_unique<partitioning_writer>(
-          *_writer_factory,
-          key_value_translator{}.build_type(std::nullopt).type);
+          *_writer_factory, kvt.build_type(std::nullopt).type);
     }
 
-    auto record_data_res = co_await key_value_translator{}.translate_data(
+    auto record_data_res = co_await kvt.translate_data(
       _ntp.tp.partition,
       offset,
       std::move(key),
@@ -312,6 +311,15 @@ record_multiplexer::handle_invalid_record(
           _log.trace, "Error translating data for invalid record: {}", offset);
         co_return writer_error::parquet_conversion_error;
     }
+
+    // update result before add_data otherwise so that we know that
+    // there is pending data to be drained.
+    if (!_result.has_value()) {
+        _result = write_result{
+          .start_offset = offset,
+        };
+    }
+    _result.value().last_offset = offset;
 
     int64_t estimated_size = (key ? key->size_bytes() : 0)
                              + (val ? val->size_bytes() : 0);

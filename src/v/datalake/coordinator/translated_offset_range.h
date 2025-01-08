@@ -24,18 +24,22 @@ struct translated_offset_range
       translated_offset_range,
       serde::version<0>,
       serde::compat_version<0>> {
-    auto serde_fields() { return std::tie(start_offset, last_offset, files); }
+    auto serde_fields() {
+        return std::tie(start_offset, last_offset, files, dlq_files);
+    }
     // First Kafka offset (inclusive) represented in this range.
     kafka::offset start_offset;
     // Last Kafka offset (inclusive) represented in this range.
     kafka::offset last_offset;
     chunked_vector<data_file> files;
+    chunked_vector<data_file> dlq_files;
 
     translated_offset_range copy() const {
         translated_offset_range range;
         range.start_offset = start_offset;
         range.last_offset = last_offset;
         range.files = files.copy();
+        range.dlq_files = dlq_files.copy();
         return range;
     }
 };

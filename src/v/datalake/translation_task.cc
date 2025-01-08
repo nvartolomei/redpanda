@@ -79,16 +79,19 @@ translation_task::translate(
     auto write_result = std::move(mux_result).value();
     vlog(
       datalake_log.trace,
-      "translation result base offset: {}, last offset: {}, data files: {}",
+      "translation result base offset: {}, last offset: {}, data files: {}, "
+      "dlq data files: {}",
       write_result.start_offset,
       write_result.last_offset,
-      fmt::join(write_result.data_files, ", "));
+      fmt::join(write_result.data_files, ", "),
+      fmt::join(write_result.dlq_data_files, ", "));
 
     coordinator::translated_offset_range ret{
       .start_offset = write_result.start_offset,
       .last_offset = write_result.last_offset,
     };
     ret.files.reserve(write_result.data_files.size());
+    ret.dlq_files.reserve(write_result.dlq_data_files.size());
     std::optional<errc> upload_error;
     // TODO: parallelize uploads
     for (auto& lf_meta : write_result.data_files) {
@@ -117,6 +120,32 @@ translation_task::translate(
           .hour = lf_meta.hour,
         });
     }
+    for (auto& lf_meta : write_result.dlq_data_files) {
+        auto r = co_await execute_single_upload(
+          lf_meta, remote_path_prefix, rcn, lazy_as);
+        if (r.has_error()) {
+            vlog(
+              datalake_log.warn,
+              "error uploading file {} to object store - {}",
+              lf_meta,
+              r.error());
+            upload_error = r.error();
+            /**
+             * For now we value simplicity, therefore in case of cloud error we
+             * invalidate the whole translation i.e. we are going to cleanup all
+             * the local data files and remote files that were already
+             * successfully uploaded. Coordinator will simply retry translating
+             * the same range
+             */
+            break;
+        }
+        ret.dlq_files.push_back(coordinator::data_file{
+          .remote_path = r.value()().string(),
+          .row_count = lf_meta.row_count,
+          .file_size_bytes = lf_meta.size_bytes,
+          .hour = lf_meta.hour,
+        });
+    }
 
     auto delete_result = co_await delete_local_data_files(
       write_result.data_files);
@@ -128,11 +157,24 @@ translation_task::translate(
           delete_result.error());
     }
 
+    auto dlq_delete_result = co_await delete_local_data_files(
+      write_result.dlq_data_files);
+    // for now we simply ignore the local deletion failures
+    if (dlq_delete_result.has_error()) {
+        vlog(
+          datalake_log.warn,
+          "error deleting local data files - {}",
+          dlq_delete_result.error());
+    }
+
     if (upload_error) {
         // in this case we delete any successfully uploaded remote files before
         // returning a result
         chunked_vector<remote_path> files_to_delete;
         for (auto& data_file : ret.files) {
+            files_to_delete.emplace_back(data_file.remote_path);
+        }
+        for (auto& data_file : ret.dlq_files) {
             files_to_delete.emplace_back(data_file.remote_path);
         }
         // TODO: add mechanism for cleaning up orphaned files that may be left

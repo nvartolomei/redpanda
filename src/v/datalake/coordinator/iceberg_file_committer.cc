@@ -99,6 +99,8 @@ ss::future<
   checked<chunked_vector<mark_files_committed_update>, file_committer::errc>>
 iceberg_file_committer::commit_topic_files_to_catalog(
   model::topic topic, const topics_state& state) const {
+    // TODO(iceberg-dlq): Commit to DLQ tables.
+
     vlog(datalake_log.debug, "Beginning commit for topic {}", topic);
     auto tp_it = state.topic_to_state.find(topic);
     if (
