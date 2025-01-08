@@ -110,9 +110,6 @@ class DatalakeE2ETests(RedpandaTest):
             avro_serde_client.wait()
             dl.wait_for_translation(self.topic_name, msg_count=count)
 
-            # Ensure DLQ table exists
-            dl.wait_for_iceberg_table('redpanda', f"{table_name}_dlq", 10, 1)
-
             if query_engine == QueryEngineType.TRINO:
                 trino = dl.trino()
                 trino_expected_out = [(
@@ -212,6 +209,66 @@ class DatalakeE2ETests(RedpandaTest):
             dl.create_iceberg_enabled_topic(self.topic_name, partitions=5)
             dl.produce_to_topic(self.topic_name, 1024, count)
             dl.wait_for_translation(self.topic_name, msg_count=count)
+
+    @cluster(num_nodes=4)
+    @matrix(cloud_storage_type=supported_storage_types(),
+            query_engine=[QueryEngineType.SPARK])  #, QueryEngineType.TRINO])
+    def test_dlq(self, cloud_storage_type, query_engine):
+        table_name = f"redpanda.{self.topic_name}"
+
+        with DatalakeServices(self.test_ctx,
+                              redpanda=self.redpanda,
+                              filesystem_catalog_mode=True,
+                              include_query_engines=[query_engine]) as dl:
+            dl.create_iceberg_enabled_topic(
+                self.topic_name, iceberg_mode="value_schema_id_prefix")
+
+            num_avro_per_iter = 7
+            num_invalid_per_iter = 5
+            num_iter = 10
+            for _ in range(num_iter):
+                avro_serde_client = self._get_serde_client(
+                    SchemaType.AVRO, SerdeClientType.Golang, self.topic_name,
+                    num_avro_per_iter)
+                avro_serde_client.start()
+                avro_serde_client.wait()
+                avro_serde_client.free()
+
+                dl.produce_to_topic(self.topic_name, 1024,
+                                    num_invalid_per_iter)
+
+            # Wait for valid messages to be translated.
+            dl.wait_for_translation(self.topic_name,
+                                    msg_count=num_iter * num_avro_per_iter)
+
+            # Wait for invalid messages to be translated to DLQ.
+            dl.wait_for_translation(self.topic_name,
+                                    msg_count=num_iter * num_invalid_per_iter,
+                                    dlq=True)
+
+            # if query_engine == QueryEngineType.TRINO:
+            #     trino = dl.trino()
+            #     trino_expected_out = [(
+            #         'redpanda',
+            #         'row(partition integer, offset bigint, timestamp timestamp(6), headers array(row(key varbinary, value varbinary)), key varbinary)',
+            #         '', ''), ('val', 'bigint', '', '')]
+            #     trino_describe_out = trino.run_query_fetch_all(
+            #         f"describe {table_name}")
+            #     assert trino_describe_out == trino_expected_out, str(
+            #         trino_describe_out)
+            # else:
+            #     spark = dl.spark()
+            #     spark_expected_out = [(
+            #         'redpanda',
+            #         'struct<partition:int,offset:bigint,timestamp:timestamp_ntz,headers:array<struct<key:binary,value:binary>>,key:binary>',
+            #         None), ('val', 'bigint', None), ('', '', ''),
+            #                           ('# Partitioning', '', ''),
+            #                           ('Part 0', 'hours(redpanda.timestamp)',
+            #                            '')]
+            #     spark_describe_out = spark.run_query_fetch_all(
+            #         f"describe {table_name}")
+            #     assert spark_describe_out == spark_expected_out, str(
+            #         spark_describe_out)
 
 
 class DatalakeMetricsTest(RedpandaTest):

@@ -207,23 +207,31 @@ class DatalakeServices():
                              topic,
                              msg_count,
                              timeout=30,
-                             backoff_sec=5):
-        self.wait_for_iceberg_table("redpanda", topic, timeout, backoff_sec)
+                             backoff_sec=5,
+                             dlq: bool = False):
+        table = topic
+        if dlq:
+            table = f"{topic}_dlq"
+
+        self.wait_for_iceberg_table("redpanda", table, timeout, backoff_sec)
 
         def translation_done():
             counts = dict(
                 map(
                     lambda e:
-                    (e.engine_name(), e.count_table("redpanda", topic)),
+                    (e.engine_name(), e.count_table("redpanda", table)),
                     self.query_engines))
-            self.redpanda.logger.debug(f"Current counts: {counts}")
+            self.redpanda.logger.debug(
+                f"Current counts for table {table}: {counts}")
             return all([c == msg_count for _, c in counts.items()])
 
         wait_until(
             translation_done,
             timeout_sec=timeout,
             backoff_sec=backoff_sec,
-            err_msg=f"Timed out waiting for events to appear in datalake")
+            err_msg=
+            f"Timed out waiting for events to appear in datalake for table {table}"
+        )
 
     def produce_to_topic(self,
                          topic,
