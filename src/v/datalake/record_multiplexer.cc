@@ -51,6 +51,10 @@ record_multiplexer::operator()(model::record_batch batch) {
           _as.abort_reason());
         co_return ss::stop_iteration::yes;
     }
+
+    iceberg::table_identifier table_id = _schema_mgr.table_id_for_topic(
+      _ntp.tp.topic);
+
     if (batch.compressed()) {
         batch = co_await storage::internal::decompress_batch(std::move(batch));
     }
@@ -168,7 +172,7 @@ record_multiplexer::operator()(model::record_batch batch) {
             }
 
             auto get_ids_res = co_await _schema_mgr.get_registered_ids(
-              _schema_mgr.table_id_for_topic(_ntp.tp.topic), record_type.type);
+              table_id, record_type.type);
             if (get_ids_res.has_error()) {
                 auto e = get_ids_res.error();
                 switch (e) {
@@ -231,17 +235,41 @@ record_multiplexer::end_of_stream() {
         // no batches were processed.
         co_return writer_error::no_data;
     }
+
+    auto collect_files = [](datalake::partitioning_writer&& writer, auto& sink)
+      -> ss::future<std::optional<writer_error>> {
+        auto res = co_await std::move(writer).finish();
+        if (res.has_error()) {
+            co_return res.error();
+        } else {
+            auto& files = res.value();
+            std::move(files.begin(), files.end(), std::back_inserter(sink));
+        }
+
+        co_return std::nullopt;
+    };
+
     auto writers = std::move(_writers);
     for (auto& [id, writer] : writers) {
-        auto res = co_await std::move(*writer).finish();
-        if (res.has_error()) {
-            _error = res.error();
+        if (
+          auto maybe_err = co_await collect_files(
+            std::move(*writer), _result->data_files)) {
+            _error = maybe_err.value();
+            vlog(_log.warn, "Error finishing writer for table: {}", _error);
             continue;
         }
-        auto& files = res.value();
-        std::move(
-          files.begin(), files.end(), std::back_inserter(_result->data_files));
     }
+
+    if (_dlq_writer) {
+        if (
+          auto maybe_err = co_await collect_files(
+            std::move(*std::exchange(_dlq_writer, nullptr)),
+            _result->dlq_data_files)) {
+            vlog(_log.warn, "Error finishing dlq writer for table: {}", _error);
+            _error = maybe_err.value();
+        }
+    }
+
     if (_error) {
         co_return *_error;
     }
@@ -251,16 +279,53 @@ record_multiplexer::end_of_stream() {
 ss::future<result<std::nullopt_t, writer_error>>
 record_multiplexer::handle_invalid_record(
   kafka::offset offset,
-  std::optional<iobuf>,
-  std::optional<iobuf>,
-  model::timestamp,
-  chunked_vector<std::pair<std::optional<iobuf>, std::optional<iobuf>>>) {
+  std::optional<iobuf> key,
+  std::optional<iobuf> val,
+  model::timestamp timestamp,
+  chunked_vector<std::pair<std::optional<iobuf>, std::optional<iobuf>>>
+    header_kvs) {
+    // TODO(iceberg-dlq): Why this logs `record_schema_resolver.cc:186 - Schema
+    // ID 0 not in registry; using binary type`?
     vlog(_log.debug, "Dropping invalid record at offset {}", offset);
     // TODO: add a metric!
     // TODO: dead-letter table?
 
     // TODO(iceberg-dlq): Return valid and invalid records so that they can be
     //   committed to the main table and DLQ respectively.
+
+    if (!_dlq_writer) {
+        _dlq_writer = std::make_unique<partitioning_writer>(
+          *_writer_factory,
+          key_value_translator{}.build_type(std::nullopt).type);
+    }
+
+    auto record_data_res = co_await key_value_translator{}.translate_data(
+      _ntp.tp.partition,
+      offset,
+      std::move(key),
+      std::nullopt,
+      std::move(val),
+      timestamp,
+      header_kvs);
+    if (record_data_res.has_error()) {
+        vlog(
+          _log.trace, "Error translating data for invalid record: {}", offset);
+        co_return writer_error::parquet_conversion_error;
+    }
+
+    int64_t estimated_size = (key ? key->size_bytes() : 0)
+                             + (val ? val->size_bytes() : 0);
+
+    auto write_res = co_await _dlq_writer->add_data(
+      std::move(record_data_res.value()), estimated_size);
+    if (write_res != writer_error::ok) {
+        vlog(
+          _log.warn,
+          "Error adding data to DLQ writer for record {}: {}",
+          offset,
+          write_res);
+        co_return write_res;
+    }
 
     co_return std::nullopt;
 }

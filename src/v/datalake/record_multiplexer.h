@@ -40,6 +40,7 @@ public:
         // vector containing a list of files that were written during
         // translation.
         chunked_vector<local_file_metadata> data_files;
+        chunked_vector<local_file_metadata> dlq_data_files;
     };
     explicit record_multiplexer(
       const model::ntp& ntp,
@@ -78,6 +79,8 @@ private:
       record_schema_components,
       std::unique_ptr<partitioning_writer>>
       _writers;
+
+    std::unique_ptr<partitioning_writer> _dlq_writer;
 
     std::optional<writer_error> _error;
     std::optional<write_result> _result;
