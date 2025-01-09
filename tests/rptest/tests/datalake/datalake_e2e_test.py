@@ -242,9 +242,9 @@ class DatalakeE2ETests(RedpandaTest):
                                     msg_count=num_iter * num_avro_per_iter)
 
             # Wait for invalid messages to be translated to DLQ.
-            # dl.wait_for_translation(self.topic_name,
-            #                         msg_count=num_iter * num_invalid_per_iter,
-            #                         dlq=True)
+            dl.wait_for_translation(self.topic_name,
+                                    msg_count=num_iter * num_invalid_per_iter,
+                                    dlq=True)
 
             # if query_engine == QueryEngineType.TRINO:
             #     trino = dl.trino()

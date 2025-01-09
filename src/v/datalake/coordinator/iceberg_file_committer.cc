@@ -151,6 +151,7 @@ iceberg_file_committer::commit_topic_files_to_catalog(
 
     chunked_hash_map<model::partition_id, kafka::offset> pending_commits;
     chunked_vector<iceberg::data_file> icb_files;
+    chunked_vector<iceberg::data_file> dlq_icb_files;
     std::optional<model::offset> new_committed_offset;
     const auto& tp_state = tp_it->second;
     for (const auto& [pid, p_state] : tp_state.pid_to_pending_files) {
@@ -191,6 +192,19 @@ iceberg_file_committer::commit_topic_files_to_catalog(
                   .file_size_bytes = f.file_size_bytes,
                 });
             }
+
+            for (const auto& f : e.data.dlq_files) {
+                auto pk = std::make_unique<iceberg::struct_value>();
+                pk->fields.emplace_back(iceberg::int_value{f.hour});
+                dlq_icb_files.emplace_back(iceberg::data_file{
+                  .content_type = iceberg::data_file_content_type::data,
+                  .file_path = io_.to_uri(std::filesystem::path(f.remote_path)),
+                  .file_format = iceberg::data_file_format::parquet,
+                  .partition = iceberg::partition_key{std::move(pk)},
+                  .record_count = f.row_count,
+                  .file_size_bytes = f.file_size_bytes,
+                });
+            }
         }
     }
     if (pending_commits.empty()) {
@@ -201,6 +215,12 @@ iceberg_file_committer::commit_topic_files_to_catalog(
           topic_revision);
         co_return chunked_vector<mark_files_committed_update>{};
     }
+    vlog(
+      datalake_log.debug,
+      "Committing {} files for topic and {} dlq files {}",
+      icb_files.size(),
+      dlq_icb_files.size(),
+      topic);
     chunked_vector<mark_files_committed_update> updates;
     for (const auto& [pid, committed_offset] : pending_commits) {
         auto tp = model::topic_partition(topic, pid);
@@ -216,7 +236,7 @@ iceberg_file_committer::commit_topic_files_to_catalog(
         }
         updates.emplace_back(std::move(update_res.value()));
     }
-    if (icb_files.empty()) {
+    if (icb_files.empty() && dlq_icb_files.empty()) {
         // All files are deduplicated.
         vlog(
           datalake_log.debug,
@@ -232,28 +252,73 @@ iceberg_file_committer::commit_topic_files_to_catalog(
     const auto commit_meta = commit_offset_metadata{
       .offset = *new_committed_offset,
     };
-    vlog(
-      datalake_log.debug,
-      "Adding {} files to Iceberg table {}",
-      icb_files.size(),
-      table_id);
-    iceberg::transaction txn(std::move(table));
-    auto icb_append_res = co_await txn.merge_append(
-      io_,
-      std::move(icb_files),
-      {{commit_meta_prop, to_json_str(commit_meta)}});
-    if (icb_append_res.has_error()) {
-        co_return log_and_convert_action_errc(
-          icb_append_res.error(),
-          fmt::format("Iceberg merge append failed for table {}", table_id));
+    if (!icb_files.empty()) {
+        vlog(
+          datalake_log.debug,
+          "Adding {} files to Iceberg table {}",
+          icb_files.size(),
+          table_id);
+        iceberg::transaction txn(std::move(table));
+        auto icb_append_res = co_await txn.merge_append(
+          io_,
+          std::move(icb_files),
+          {{commit_meta_prop, to_json_str(commit_meta)}});
+        if (icb_append_res.has_error()) {
+            co_return log_and_convert_action_errc(
+              icb_append_res.error(),
+              fmt::format(
+                "Iceberg merge append failed for table {}", table_id));
+        }
+        auto icb_commit_res = co_await catalog_.commit_txn(
+          table_id, std::move(txn));
+        if (icb_commit_res.has_error()) {
+            co_return log_and_convert_catalog_errc(
+              icb_commit_res.error(),
+              fmt::format(
+                "Iceberg transaction did not commit to table {}", table_id));
+        }
     }
-    auto icb_commit_res = co_await catalog_.commit_txn(
-      table_id, std::move(txn));
-    if (icb_commit_res.has_error()) {
-        co_return log_and_convert_catalog_errc(
-          icb_commit_res.error(),
-          fmt::format(
-            "Iceberg transaction did not commit to table {}", table_id));
+
+    auto dlq_table_id = table_id_for_topic(topic);
+    dlq_table_id.table += "_dlq";
+
+    auto dlq_table_res = co_await load_table(dlq_table_id);
+    if (dlq_table_res.has_error()) {
+        vlog(
+          datalake_log.warn,
+          "Error loading DLQ table {} for committing from topic {}",
+          dlq_table_id,
+          topic);
+        co_return dlq_table_res.error();
+    }
+    auto& dlq_table = dlq_table_res.value();
+
+    if (!dlq_icb_files.empty()) {
+        vlog(
+          datalake_log.debug,
+          "Adding {} files to Iceberg dlq table {}",
+          dlq_icb_files.size(),
+          dlq_table_id);
+        iceberg::transaction txn(std::move(dlq_table));
+        auto icb_append_res = co_await txn.merge_append(
+          io_,
+          std::move(dlq_icb_files),
+          {{commit_meta_prop, to_json_str(commit_meta)}});
+        if (icb_append_res.has_error()) {
+            co_return log_and_convert_action_errc(
+              icb_append_res.error(),
+              fmt::format(
+                "Iceberg merge append failed for table {}", dlq_table_id));
+        }
+        auto icb_commit_res = co_await catalog_.commit_txn(
+          dlq_table_id, std::move(txn));
+        if (icb_commit_res.has_error()) {
+            co_return log_and_convert_catalog_errc(
+              icb_commit_res.error(),
+              fmt::format(
+                "Iceberg transaction did not commit to table {}",
+                dlq_table_id));
+        }
     }
     co_return updates;
 }
@@ -273,6 +338,8 @@ iceberg_file_committer::drop_table(const model::topic& topic) const {
 
 iceberg::table_identifier
 iceberg_file_committer::table_id_for_topic(const model::topic& t) const {
+    // TODO(iceberg-dlq): This code is duplicated. Refactor to a common
+    // function.
     return iceberg::table_identifier{
       // TODO: namespace as a topic property? Keep it in the table metadata?
       .ns = {"redpanda"},
