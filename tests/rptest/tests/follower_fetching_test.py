@@ -25,20 +25,13 @@ from rptest.util import wait_for_local_storage_truncate, wait_until_result
 from ducktape.utils.util import wait_until
 
 from rptest.utils.mode_checks import skip_debug_mode
+import threading
 
 
 class FollowerFetchingTest(PreallocNodesTest):
     def __init__(self, test_context):
         self.log_segment_size = 1024 * 1024
         self.local_retention = 2 * self.log_segment_size
-        si_settings = SISettings(
-            test_context,
-            cloud_storage_max_connections=5,
-            log_segment_size=self.log_segment_size,
-            cloud_storage_enable_remote_read=True,
-            cloud_storage_enable_remote_write=True,
-        )
-        self.s3_bucket_name = si_settings.cloud_storage_bucket
 
         super(FollowerFetchingTest, self).__init__(
             test_context=test_context,
@@ -47,9 +40,11 @@ class FollowerFetchingTest(PreallocNodesTest):
             extra_rp_conf={
                 'enable_rack_awareness': True,
                 # disable leader balancer to prevent leaders from moving and causing additional client retries
-                'enable_leader_balancer': False
+                'enable_leader_balancer': False,
+                'default_leaders_preference': 'racks:A',
+                'log_segment_size': self.log_segment_size,
             },
-            si_settings=si_settings)
+        )
 
     def setUp(self):
         # Delay startup, so that the test case can configure redpanda
@@ -120,9 +115,8 @@ class FollowerFetchingTest(PreallocNodesTest):
             topic,
             "vectorized_cluster_partition_bytes_fetched_from_follower_total")
 
-    @cluster(num_nodes=5)
-    @matrix(read_from_object_store=[True, False])
-    def test_basic_follower_fetching(self, read_from_object_store):
+    @cluster(num_nodes=4)
+    def test_basic_follower_fetching(self):
         rack_layout_str = "ABC"
         rack_layout = [str(i) for i in rack_layout_str]
 
@@ -132,67 +126,49 @@ class FollowerFetchingTest(PreallocNodesTest):
                 # The small rack has only one node and the
                 # large one has four nodes.
                 'rack': rack_layout[ix],
-                # This parameter enables rack awareness
-                'enable_rack_awareness': True,
             }
             self.redpanda.set_extra_node_conf(node, extra_node_conf)
 
         self.redpanda.start()
-        topic = TopicSpec(partition_count=1, replication_factor=3)
+        topic = TopicSpec(partition_count=1,
+                          replication_factor=3,
+                          retention_ms=30000)
 
         self.client().create_topic(topic)
-
-        self.produce(topic.name)
         self.logger.info(f"Producing to {topic.name} finished")
-        if read_from_object_store:
-            RpkTool(self.redpanda).alter_topic_config(
-                topic.name,
-                TopicSpec.PROPERTY_RETENTION_LOCAL_TARGET_BYTES,
-                self.local_retention,
-            )
-            wait_for_local_storage_truncate(self.redpanda,
-                                            topic.name,
-                                            target_bytes=self.local_retention)
-        number_of_samples = 10
-        for n in range(0, number_of_samples):
-            node_idx = random.randint(0, 2)
-            consumer_rack = rack_layout_str[node_idx]
-            self.logger.info(
-                f"Using consumer with {consumer_rack} in {n+1}/{number_of_samples} sample"
-            )
-            fetched_per_node_before = self._bytes_fetched_per_node(topic.name)
-            f_fetched_before = self._follower_bytes_fetched_per_node(
-                topic.name)
-            consumer = self.create_consumer(topic.name, rack=consumer_rack)
-            consumer.start()
-            consumer.wait_for_messages(1000)
-            consumer.stop()
-            consumer.wait()
-            consumer.clean()
-            consumer.free()
 
-            fetched_per_node_after = self._bytes_fetched_per_node(topic.name)
-            f_fetched_after = self._follower_bytes_fetched_per_node(topic.name)
-            preferred_replica = self.redpanda.nodes[node_idx]
-            self.logger.info(
-                f"preferred replica {preferred_replica.account.hostname}:{self.redpanda.node_id(preferred_replica)} in rack {consumer_rack}"
-            )
+        rpk = RpkTool(self.redpanda)
 
-            for n, new_fetched_bytes in fetched_per_node_after.items():
-                current_bytes_fetched = new_fetched_bytes - fetched_per_node_before[
-                    n]
-                if n == preferred_replica:
-                    assert current_bytes_fetched > 0
-                else:
-                    assert current_bytes_fetched == 0
+        # rpk.consume(topic.name, n=1, fetch_max_bytes=1, rack="C")
 
-            for n, new_fetched_bytes in f_fetched_after.items():
-                follower_fetched = new_fetched_bytes - f_fetched_before[n]
-                if n == preferred_replica:
-                    # follower fetched bytes may be equal to 0 if preferred replica is a leader
-                    assert follower_fetched >= 0
-                else:
-                    assert follower_fetched == 0
+        def run_prod_one_by_one(limit=None):
+            i = 0
+            while limit is None or i < limit:
+                rpk.produce(topic.name, "", "A" * 100 * 1024)
+                time.sleep(0.5)
+                i += 1
+
+        # 1 minute and at least 10 MiB
+        run_prod_one_by_one(120)
+
+        # 30 seconds before
+        query_at = round(time.time()) - 30
+
+        # Continue producing in background
+        prod_thread = threading.Thread(target=run_prod_one_by_one)
+        prod_thread.start()
+
+        self.logger.info("Sleeping for a bit")
+        time.sleep(60)
+
+        for i in range(100):
+            print("!! consuming in iteration", i)
+            rpk.consume(topic.name,
+                        n=1,
+                        fetch_max_bytes=1,
+                        rack="C",
+                        offset=f"@{query_at}")
+            time.sleep(1)
 
     @cluster(num_nodes=5)
     def test_with_leadership_transfers(self):

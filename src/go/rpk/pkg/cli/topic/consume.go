@@ -573,6 +573,7 @@ func parseTimestampBasedOffset(
 func (c *consumer) parseTimeOffset(
 	offset string, topics []string, adm *kadm.Client,
 ) error {
+	fmt.Println("parseTimeOffset")
 	c.resetOffset = kgo.NewOffset().AtStart() // default to start; likely overridden below
 	var (
 		length        int

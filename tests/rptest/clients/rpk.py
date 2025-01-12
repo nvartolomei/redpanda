@@ -786,7 +786,8 @@ class RpkTool:
                 quiet=False,
                 format=None,
                 timeout=None,
-                use_schema_registry=None):
+                use_schema_registry=None,
+                rack=None):
         cmd = ["consume", topic]
         if group is not None:
             cmd += ["-g", group]
@@ -806,6 +807,8 @@ class RpkTool:
             cmd += ["--use-schema-registry=" + use_schema_registry]
         elif format is not None:
             cmd += ["-f", format]
+        if rack:
+            cmd += ["--rack", rack]
 
         return self._run_topic(cmd,
                                timeout=timeout,
