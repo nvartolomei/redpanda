@@ -618,3 +618,172 @@ TEST_F_CORO(state_machine_fixture, test_opt_out_from_snapshot_at_offset) {
           n->raft()->start_offset(), model::next_offset(offsets[id]));
     }
 }
+
+struct controllable_kv : public simple_kv {
+    static constexpr std::string_view name = "controllable_kv";
+    explicit controllable_kv(raft_node_instance& rn)
+      : simple_kv(rn) {}
+
+    ss::future<> apply(
+      const model::record_batch& batch,
+      const ssx::semaphore_units& apply_units) override {
+        vlog(
+          logger.info,
+          "{} controllable_kv::apply batch {}",
+          raft_node.get_vnode().id(),
+          batch.header().base_offset);
+        co_await apply_tokens.wait(1);
+        co_await simple_kv::apply(batch, apply_units);
+        vlog(
+          logger.info,
+          "{} controllable_kv::apply batch {} done",
+          raft_node.get_vnode().id(),
+          batch.header().base_offset);
+    }
+
+    // Allow to lie about next.
+    void set_next(model::offset o) { simple_kv::set_next(o); }
+
+    ss::future<> apply_raft_snapshot(const iobuf& buf) override {
+        vlog(
+          logger.info,
+          "{} controllable_kv::apply_raft_snapshot",
+          raft_node.get_vnode().id());
+        co_await simple_kv::apply_raft_snapshot(buf);
+    }
+
+    // A queue of tokens rather than a concurrency limit.
+    ss::semaphore apply_tokens{0};
+};
+
+TEST_F_CORO(
+  state_machine_fixture, test_concurrent_apply_and_install_raft_snapshot) {
+    create_nodes();
+    std::vector<ss::shared_ptr<controllable_kv>> stms;
+    for (auto& [id, node] : nodes()) {
+        raft::state_machine_manager_builder builder;
+        auto kv_stm = builder.create_stm<controllable_kv>(*node);
+        auto kv2_stm = builder.create_stm<simple_kv>(*node);
+        stms.push_back(kv_stm);
+
+        co_await node->init_and_start(all_vnodes(), std::move(builder));
+    }
+
+    vlog(logger().info, "Generating state for test");
+    co_await build_random_state(10, wait_for_each_batch::no, 1);
+    for (auto& stm : stms) {
+        stm->apply_tokens.signal(11);
+    }
+
+    vlog(logger().info, "Waiting for state machines");
+    co_await wait_for_apply();
+
+    for (auto& stm : stms) {
+        if (stm == stms[0]) {
+            // Skip the first one.
+            continue;
+        }
+        stm->apply_tokens.signal(11);
+    }
+    co_await build_random_state(10, wait_for_each_batch::no, 1);
+
+    auto stopped_id = nodes().begin()->first;
+    vlog(logger().info, "Stopping raft on first node {}", stopped_id);
+    auto base_dir = nodes().begin()->second->base_directory();
+    stms[0]->apply_tokens.broken();
+    co_await stop_node(stopped_id);
+
+    vlog(logger().info, "Generating additional state for test");
+    co_await build_random_state(10, wait_for_each_batch::no, 1);
+    for (auto& stm : stms) {
+        stm->apply_tokens.signal(11);
+    }
+
+    vlog(logger().info, "Waiting for state machines");
+    co_await wait_for_apply();
+
+    // start the node back up
+    vlog(logger().info, "Starting node {} with new data dir", stopped_id);
+    auto& nn = add_node(stopped_id, model::revision_id{0}, base_dir);
+
+    {
+        raft::state_machine_manager_builder builder;
+        auto kv_stm = builder.create_stm<controllable_kv>(nn);
+        // kv_stm->set_next(model::offset(10));
+
+        auto kv2_stm = builder.create_stm<simple_kv>(nn);
+        kv2_stm->set_next(model::offset(10));
+
+        co_await nn.initialise(all_vnodes());
+        co_await nn.start(builder);
+    }
+
+    // wait for the state to be applied
+    co_await ss::sleep(5s);
+
+    co_await build_random_state(10, wait_for_each_batch::no, 1);
+    for (auto& stm : stms) {
+        stm->apply_tokens.signal(11);
+    }
+
+    // partition
+    for (auto& [id, node] : nodes()) {
+        node->on_dispatch(
+          [id = nn.get_vnode().id()](model::node_id idc, msg_type) {
+              if (idc != id) {
+                  return ss::now();
+              }
+              // return ss::sleep(1s);
+              throw std::runtime_error("induced failure");
+          });
+    }
+
+    co_await build_random_state(10, wait_for_each_batch::no, 1);
+    for (auto& stm : stms) {
+        stm->apply_tokens.signal(11);
+    }
+
+    // Force roll to allow for prefix truncation during snapshot.
+    for (auto& [id, node] : nodes()) {
+        co_await node->raft()->log()->force_roll(ss::default_priority_class());
+    }
+
+    co_await build_random_state(10, wait_for_each_batch::no, 1);
+    for (auto& stm : stms) {
+        stm->apply_tokens.signal(11);
+    }
+
+    auto snapshot_offset = co_await with_leader(
+      10s, [](raft_node_instance& node) {
+          return model::prev_offset(node.raft()->committed_offset());
+      });
+
+    vlog(logger().info, "Taking snapshot at {}", snapshot_offset);
+    co_await parallel_for_each_node(
+      [snapshot_offset, &nn](raft_node_instance& n) {
+          if (n.get_vnode() == nn.get_vnode()) {
+              return ss::now();
+          }
+
+          return n.raft()
+            ->stm_manager()
+            ->take_snapshot(snapshot_offset)
+            .then([raft = n.raft(), snapshot_offset](
+                    state_machine_manager::snapshot_result snapshot_result) {
+                return raft->write_snapshot(raft::write_snapshot_cfg(
+                  snapshot_offset, std::move(snapshot_result.data)));
+            });
+      });
+
+    vlog(logger().info, "Taking snapshot done");
+
+    co_await ss::sleep(5s);
+
+    for (auto& [id, node] : nodes()) {
+        node->reset_dispatch_handlers();
+    }
+
+    co_await ss::sleep(15s);
+
+    co_return;
+}

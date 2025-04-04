@@ -120,6 +120,8 @@ struct simple_kv_base : public BaseT {
 };
 class simple_kv : public simple_kv_base<state_machine_base> {
 public:
+    void set_next(model::offset o) { simple_kv_base::set_next(o); }
+
     explicit simple_kv(raft_node_instance& rn)
       : simple_kv_base<>(rn) {}
 

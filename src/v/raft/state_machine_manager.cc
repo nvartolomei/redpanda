@@ -311,19 +311,24 @@ ss::future<> state_machine_manager::apply_snapshot_to_stm(
 }
 
 ss::future<> state_machine_manager::try_apply_in_foreground() {
+    vlog(_log.info, "trying to apply in foreground");
     try {
         ss::coroutine::switch_to sg_sw(_apply_sg);
         // wait until consensus commit index is >= _next
+        vlog(_log.info, "waiting ");
         co_await _raft->events().wait(_next, model::no_timeout, _as);
         auto u = co_await _apply_mutex.get_units();
 
         if (_next < _raft->start_offset()) {
+            vlog(_log.info, "applying snapshot");
             /**
              * We need to return here as applied snapshot may not yet be
              * committed.
              */
             co_return co_await apply_raft_snapshot();
         }
+
+        vlog(_log.info, "looking at machines");
 
         // collect STMs which has the same _next offset as the offset in
         // manager and there is no background apply taking place
@@ -414,6 +419,7 @@ ss::future<> state_machine_manager::apply() {
 
 void state_machine_manager::maybe_start_background_apply(
   const entry_ptr& entry) {
+    vlog(_log.info, "maybe starting background apply for {}", entry->name);
     if (likely(entry->stm->next() == _next)) {
         return;
     }
