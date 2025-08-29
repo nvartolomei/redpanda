@@ -3553,6 +3553,9 @@ class RedpandaService(RedpandaServiceBase):
 
         if timeout is None:
             timeout = self.node_ready_timeout_s
+        self.logger.debug(
+            f"Effective {node.name} Redpanda startup timeout: {timeout} sec"
+        )
 
         if self.dedicated_nodes:
             # When running on dedicated nodes, we should always be running on XFS.  If we
