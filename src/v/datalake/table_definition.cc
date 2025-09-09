@@ -10,15 +10,18 @@
 #include "datalake/table_definition.h"
 
 namespace datalake {
+
 using namespace iceberg;
-struct_type schemaless_struct_type() {
-    using namespace iceberg;
-    struct_type system_fields;
-    system_fields.fields.emplace_back(
+
+namespace {
+
+struct_type system_field_type() {
+    struct_type system_struct;
+    system_struct.fields.emplace_back(
       nested_field::create(2, "partition", field_required::yes, int_type{}));
-    system_fields.fields.emplace_back(
+    system_struct.fields.emplace_back(
       nested_field::create(3, "offset", field_required::yes, long_type{}));
-    system_fields.fields.emplace_back(
+    system_struct.fields.emplace_back(
       nested_field::create(
         4, "timestamp", field_required::yes, timestamp_type{}));
 
@@ -27,22 +30,31 @@ struct_type schemaless_struct_type() {
       nested_field::create(7, "key", field_required::no, binary_type{}));
     headers_kv.fields.emplace_back(
       nested_field::create(8, "value", field_required::no, binary_type{}));
-    system_fields.fields.emplace_back(
+    system_struct.fields.emplace_back(
       nested_field::create(
         5,
         "headers",
         field_required::no,
         list_type::create(6, field_required::yes, std::move(headers_kv))));
 
-    system_fields.fields.emplace_back(
+    system_struct.fields.emplace_back(
       nested_field::create(9, "key", field_required::no, binary_type{}));
+
+    return system_struct;
+}
+
+} // namespace
+
+struct_type schemaless_struct_type() {
+    using namespace iceberg;
+
     struct_type res;
     res.fields.emplace_back(
       nested_field::create(
         1,
         ss::sstring{rp_struct_name},
         field_required::yes,
-        std::move(system_fields)));
+        system_field_type()));
 
     return res;
 }
