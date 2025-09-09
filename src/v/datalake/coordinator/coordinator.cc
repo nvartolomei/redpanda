@@ -496,7 +496,7 @@ struct coordinator::dlq_table_schema_provider
 
     ss::future<checked<iceberg::struct_type, coordinator::errc>>
     get_record_type(record_schema_components) const final {
-        co_return dlq_translator{}.build_type(std::nullopt).type;
+        co_return dlq_translator{}.build_type().type;
     }
 
     ss::sstring get_partition_spec(const cluster::topic_metadata&) const final {

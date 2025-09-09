@@ -539,7 +539,7 @@ record_multiplexer::handle_invalid_record(
                 }
             }
 
-            auto record_type = translator.build_type(std::nullopt);
+            auto record_type = translator.build_type();
             if (!load_res.value().fill_registered_ids(record_type.type)) {
                 // This shouldn't happen because we ensured the schema with the
                 // call to table_creator. Probably someone managed to change the

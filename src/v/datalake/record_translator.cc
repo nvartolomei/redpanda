@@ -310,7 +310,7 @@ structured_data_translator::translate_data(
     co_return ret_data;
 }
 
-record_type dlq_translator::build_type(std::optional<resolved_type>) {
+record_type dlq_translator::build_type() {
     auto ret_type = schemaless_struct_type();
     ret_type.fields.emplace_back(
       iceberg::nested_field::create(
