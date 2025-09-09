@@ -9,7 +9,9 @@
  */
 #pragma once
 
-#include "iceberg/schema.h"
+#include "iceberg/datatypes.h"
+
+#include <string_view>
 
 namespace datalake {
 
@@ -18,7 +20,6 @@ namespace datalake {
 // Contains some minimal fields used for all tables, even those with no schemas.
 // TODO: rename to redpanda_fields_struct_type?
 iceberg::struct_type schemaless_struct_type();
-iceberg::schema default_schema();
 inline constexpr std::string_view rp_struct_name = "redpanda";
 
 } // namespace datalake

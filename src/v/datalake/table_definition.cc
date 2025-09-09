@@ -47,12 +47,4 @@ struct_type schemaless_struct_type() {
     return res;
 }
 
-schema default_schema() {
-    return {
-      .schema_struct = schemaless_struct_type(),
-      .schema_id = iceberg::schema::id_t{0},
-      .identifier_field_ids = {},
-    };
-}
-
 } // namespace datalake

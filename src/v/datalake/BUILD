@@ -239,7 +239,7 @@ redpanda_cc_library(
     ],
     visibility = [":__subpackages__"],
     deps = [
-        "//src/v/iceberg:schema",
+        "//src/v/iceberg:datatypes",
     ],
 )
 
