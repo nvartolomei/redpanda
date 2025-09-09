@@ -103,4 +103,22 @@ private:
     structured_data_translator structured_translator;
 };
 
+/// Dead Letter Queue (DLQ) Translator is similar to the schemaless (key-value)
+/// translator but with few additions which are only relevant for the DLQ table.
+class dlq_translator : public record_translator {
+public:
+    record_type build_type(std::optional<resolved_type> val_type) override;
+    ss::future<checked<iceberg::struct_value, errc>> translate_data(
+      model::partition_id pid,
+      kafka::offset o,
+      std::optional<iobuf> key,
+      const std::optional<resolved_type>& val_type,
+      std::optional<iobuf> parsable_val,
+      model::timestamp ts,
+      const chunked_vector<
+        std::pair<std::optional<iobuf>, std::optional<iobuf>>>& headers)
+      override;
+    ~dlq_translator() override = default;
+};
+
 } // namespace datalake

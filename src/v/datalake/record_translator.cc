@@ -310,4 +310,45 @@ structured_data_translator::translate_data(
     co_return ret_data;
 }
 
+record_type dlq_translator::build_type(std::optional<resolved_type>) {
+    auto ret_type = schemaless_struct_type();
+    ret_type.fields.emplace_back(
+      iceberg::nested_field::create(
+        10, "value", iceberg::field_required::no, iceberg::binary_type{}));
+    return record_type{
+      .comps = record_schema_components{
+          .key_identifier = std::nullopt,
+          .val_identifier = std::nullopt,
+      },
+      .type = std::move(ret_type),
+    };
+}
+
+ss::future<checked<iceberg::struct_value, record_translator::errc>>
+dlq_translator::translate_data(
+  model::partition_id pid,
+  kafka::offset o,
+  std::optional<iobuf> key,
+  const std::optional<resolved_type>& val_type,
+  std::optional<iobuf> parsable_val,
+  model::timestamp ts,
+  const chunked_vector<std::pair<std::optional<iobuf>, std::optional<iobuf>>>&
+    headers) {
+    if (val_type.has_value()) {
+        vlog(
+          datalake_log.error,
+          "Must not have parsed schema when using key-value mode");
+        co_return record_translator::errc::unexpected_schema;
+    }
+    auto ret_data = iceberg::struct_value{};
+
+    auto system_data = build_rp_struct(pid, o, std::move(key), ts, headers);
+    ret_data.fields.emplace_back(std::move(system_data));
+    ret_data.fields.emplace_back(
+      parsable_val ? std::make_optional<iceberg::value>(
+                       iceberg::binary_value(std::move(*parsable_val)))
+                   : std::nullopt);
+    co_return ret_data;
+}
+
 } // namespace datalake

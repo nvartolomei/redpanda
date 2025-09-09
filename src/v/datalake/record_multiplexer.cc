@@ -495,6 +495,8 @@ record_multiplexer::handle_invalid_record(
           offset,
           cause);
 
+        dlq_translator translator{};
+
         if (!_invalid_record_writer) {
             auto ensure_res = co_await _table_creator.ensure_dlq_table(
               _ntp.tp.topic, _topic_revision);
@@ -537,7 +539,7 @@ record_multiplexer::handle_invalid_record(
                 }
             }
 
-            auto record_type = key_value_translator{}.build_type(std::nullopt);
+            auto record_type = translator.build_type(std::nullopt);
             if (!load_res.value().fill_registered_ids(record_type.type)) {
                 // This shouldn't happen because we ensured the schema with the
                 // call to table_creator. Probably someone managed to change the
@@ -576,7 +578,7 @@ record_multiplexer::handle_invalid_record(
         auto resolved_buf_type = co_await invalid_record_type_resolver
                                    .resolve_buf_type(std::move(val));
 
-        auto record_data_res = co_await key_value_translator{}.translate_data(
+        auto record_data_res = co_await translator.translate_data(
           _ntp.tp.partition,
           offset,
           std::move(key),
