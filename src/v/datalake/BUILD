@@ -310,6 +310,7 @@ redpanda_cc_library(
     ],
     implementation_deps = [
         ":catalog_schema_manager",
+        ":dlq",
         ":logger",
         ":record_schema_resolver",
         ":record_translator",
@@ -558,4 +559,18 @@ redpanda_cc_library(
         "//src/v/utils:retry_chain_node",
         "@seastar",
     ],
+)
+
+redpanda_cc_library(
+    name = "dlq",
+    srcs = [
+        "dlq.cc",
+    ],
+    hdrs = [
+        "dlq.h",
+    ],
+    visibility = [
+        "//src/v/datalake:__subpackages__",
+    ],
+    deps = [],
 )

@@ -165,6 +165,7 @@ redpanda_cc_library(
     ],
     deps = [
         "//src/v/config",
+        "//src/v/datalake:dlq",
         "//src/v/metrics",
         "//src/v/model",
         "@seastar",

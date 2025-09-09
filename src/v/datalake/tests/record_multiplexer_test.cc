@@ -419,8 +419,7 @@ TEST_F(RecordMultiplexerTest, TestMissingSchema) {
 
     EXPECT_EQ(
       get_or_create_probe(ntp)->counter_ref(
-        translation_probe::invalid_record_cause::
-          failed_kafka_schema_resolution),
+        invalid_record_cause::failed_kafka_schema_resolution),
       default_param.num_records());
 }
 
@@ -453,7 +452,7 @@ TEST_F(RecordMultiplexerTest, TestBadData) {
 
     EXPECT_EQ(
       get_or_create_probe(ntp)->counter_ref(
-        translation_probe::invalid_record_cause::failed_data_translation),
+        invalid_record_cause::failed_data_translation),
       default_param.num_records());
 }
 
@@ -511,8 +510,7 @@ TEST_F(RecordMultiplexerTest, TestBadSchemaChange) {
     // Metrics updated.
     EXPECT_EQ(
       get_or_create_probe(ntp)->counter_ref(
-        translation_probe::invalid_record_cause::
-          failed_iceberg_schema_resolution),
+        invalid_record_cause::failed_iceberg_schema_resolution),
       default_param.num_records());
 }
 

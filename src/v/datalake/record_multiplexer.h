@@ -126,7 +126,7 @@ private:
     // Handles the given record components of a record that is invalid for the
     // target table.
     ss::future<result<std::nullopt_t, writer_error>> handle_invalid_record(
-      translation_probe::invalid_record_cause,
+      invalid_record_cause,
       kafka::offset,
       std::optional<iobuf>,
       std::optional<iobuf>,

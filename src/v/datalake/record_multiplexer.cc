@@ -170,8 +170,7 @@ ss::future<ss::stop_iteration> record_multiplexer::do_multiplex(
             case type_resolver::errc::bad_input:
             case type_resolver::errc::translation_error:
                 auto invalid_res = co_await handle_invalid_record(
-                  translation_probe::invalid_record_cause::
-                    failed_kafka_schema_resolution,
+                  invalid_record_cause::failed_kafka_schema_resolution,
                   offset,
                   record.share_key(),
                   record.share_value(),
@@ -206,8 +205,7 @@ ss::future<ss::stop_iteration> record_multiplexer::do_multiplex(
             case record_translator::errc::unexpected_schema:
             case record_translator::errc::translation_error:
                 auto invalid_res = co_await handle_invalid_record(
-                  translation_probe::invalid_record_cause::
-                    failed_data_translation,
+                  invalid_record_cause::failed_data_translation,
                   offset,
                   record.share_key(),
                   record.share_value(),
@@ -232,8 +230,7 @@ ss::future<ss::stop_iteration> record_multiplexer::do_multiplex(
                 switch (e) {
                 case table_creator::errc::incompatible_schema: {
                     auto invalid_res = co_await handle_invalid_record(
-                      translation_probe::invalid_record_cause::
-                        failed_iceberg_schema_resolution,
+                      invalid_record_cause::failed_iceberg_schema_resolution,
                       offset,
                       record.share_key(),
                       record.share_value(),
@@ -462,7 +459,7 @@ record_multiplexer::last_translated_offset() const {
 
 ss::future<result<std::nullopt_t, writer_error>>
 record_multiplexer::handle_invalid_record(
-  translation_probe::invalid_record_cause cause,
+  invalid_record_cause cause,
   kafka::offset offset,
   std::optional<iobuf> key,
   std::optional<iobuf> val,

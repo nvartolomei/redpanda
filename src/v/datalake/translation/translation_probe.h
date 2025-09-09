@@ -9,6 +9,7 @@
  */
 #pragma once
 
+#include "datalake/dlq.h"
 #include "metrics/metrics.h"
 #include "model/fundamental.h"
 
@@ -16,22 +17,6 @@ namespace datalake {
 
 class translation_probe final {
 public:
-    // Note: Do not forget to register new causes in
-    // register_invalid_record_metric.
-    enum class invalid_record_cause {
-        /// Failed to resolve the Kafka schema for the record. This covers the
-        /// cases where the magic byte is missing from the record or schema id
-        /// refers to a non-existent schema.
-        failed_kafka_schema_resolution,
-        /// Failed to translate the record data according to the schema fetched
-        /// from the schema registry to an equivalent Iceberg schema/Parquet
-        /// format.
-        failed_data_translation,
-        /// Failed to ensure the table schema matches the inferred Iceberg
-        /// schema.
-        failed_iceberg_schema_resolution,
-    };
-
 public:
     explicit translation_probe(model::ntp ntp);
 
@@ -89,8 +74,5 @@ private:
     size_t _raw_bytes_processed = 0;
     size_t _decompressed_bytes_processed = 0;
 };
-
-std::ostream&
-operator<<(std::ostream& os, translation_probe::invalid_record_cause cause);
 
 }; // namespace datalake
