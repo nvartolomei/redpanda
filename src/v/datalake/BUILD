@@ -399,6 +399,7 @@ redpanda_cc_library(
     ],
     visibility = [":__subpackages__"],
     deps = [
+        ":dlq",
         ":record_schema_resolver",
         ":schema_identifier",
         "//src/v/base",

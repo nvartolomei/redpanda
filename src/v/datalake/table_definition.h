@@ -15,11 +15,13 @@
 
 namespace datalake {
 
+inline constexpr std::string_view rp_struct_name = "redpanda";
+
 // Definitions for default table metadata.
 
 // Contains some minimal fields used for all tables, even those with no schemas.
 // TODO: rename to redpanda_fields_struct_type?
 iceberg::struct_type schemaless_struct_type();
-inline constexpr std::string_view rp_struct_name = "redpanda";
+iceberg::struct_type dlq_struct_type();
 
 } // namespace datalake

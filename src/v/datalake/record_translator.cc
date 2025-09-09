@@ -11,6 +11,7 @@
 
 #include "absl/container/flat_hash_set.h"
 #include "base/vlog.h"
+#include "datalake/dlq.h"
 #include "datalake/logger.h"
 #include "datalake/record_schema_resolver.h"
 #include "datalake/table_definition.h"
@@ -110,6 +111,25 @@ std::unique_ptr<iceberg::struct_value> build_rp_struct(
       key ? std::make_optional<iceberg::value>(
               iceberg::binary_value(std::move(*key)))
           : std::nullopt);
+    return system_data;
+}
+
+std::unique_ptr<iceberg::struct_value> build_dlq_rp_struct(
+  [[maybe_unused]] invalid_record_cause cause,
+  model::partition_id pid,
+  kafka::offset o,
+  std::optional<iobuf> key,
+  model::timestamp ts,
+  const chunked_vector<std::pair<std::optional<iobuf>, std::optional<iobuf>>>&
+    headers) {
+    auto system_data = build_rp_struct(pid, o, std::move(key), ts, headers);
+
+    // TODO: Add this field in the next major. I.e. post-25.3.
+    //   Requires schema merging to be released first.
+    //   https://github.com/redpanda-data/redpanda/pull/27460
+    // system_data->fields.emplace_back(
+    //   std::make_optional<iceberg::value>(
+    //     iceberg::string_value(iobuf::from(to_string_view(cause)))));
     return system_data;
 }
 
@@ -311,7 +331,7 @@ structured_data_translator::translate_data(
 }
 
 record_type dlq_translator::build_type() {
-    auto ret_type = schemaless_struct_type();
+    auto ret_type = dlq_struct_type();
     ret_type.fields.emplace_back(
       iceberg::nested_field::create(
         10, "value", iceberg::field_required::no, iceberg::binary_type{}));
@@ -326,6 +346,7 @@ record_type dlq_translator::build_type() {
 
 ss::future<checked<iceberg::struct_value, record_translator::errc>>
 dlq_translator::translate_data(
+  invalid_record_cause cause,
   model::partition_id pid,
   kafka::offset o,
   std::optional<iobuf> key,
@@ -342,7 +363,8 @@ dlq_translator::translate_data(
     }
     auto ret_data = iceberg::struct_value{};
 
-    auto system_data = build_rp_struct(pid, o, std::move(key), ts, headers);
+    auto system_data = build_dlq_rp_struct(
+      cause, pid, o, std::move(key), ts, headers);
     ret_data.fields.emplace_back(std::move(system_data));
     ret_data.fields.emplace_back(
       parsable_val ? std::make_optional<iceberg::value>(

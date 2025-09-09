@@ -9,13 +9,17 @@
  */
 #include "datalake/table_definition.h"
 
+#include "iceberg/datatypes.h"
+
 namespace datalake {
 
 using namespace iceberg;
 
 namespace {
 
-struct_type system_field_type() {
+enum class table_type : std::uint8_t { main, dlq };
+
+struct_type system_field_type([[maybe_unused]] table_type t) {
     struct_type system_struct;
     system_struct.fields.emplace_back(
       nested_field::create(2, "partition", field_required::yes, int_type{}));
@@ -40,22 +44,39 @@ struct_type system_field_type() {
     system_struct.fields.emplace_back(
       nested_field::create(9, "key", field_required::no, binary_type{}));
 
+    // TODO: Add this field in the next major. I.e. post-25.3.
+    //   Requires schema merging to be released first.
+    //   https://github.com/redpanda-data/redpanda/pull/27460
+    // if (t == table_type::dlq) {
+    //     system_struct.fields.emplace_back(
+    //       nested_field::create(
+    //         10, "invalid_record_cause", field_required::no, string_type{}));
+    // }
+
     return system_struct;
 }
 
 } // namespace
 
 struct_type schemaless_struct_type() {
-    using namespace iceberg;
-
     struct_type res;
     res.fields.emplace_back(
       nested_field::create(
         1,
         ss::sstring{rp_struct_name},
         field_required::yes,
-        system_field_type()));
+        system_field_type(table_type::main)));
+    return res;
+}
 
+struct_type dlq_struct_type() {
+    struct_type res;
+    res.fields.emplace_back(
+      nested_field::create(
+        1,
+        ss::sstring{rp_struct_name},
+        field_required::yes,
+        system_field_type(table_type::dlq)));
     return res;
 }
 

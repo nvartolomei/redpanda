@@ -10,6 +10,7 @@
 #pragma once
 
 #include "base/seastarx.h"
+#include "datalake/dlq.h"
 #include "datalake/record_schema_resolver.h"
 #include "datalake/schema_identifier.h"
 #include "iceberg/datatypes.h"
@@ -110,6 +111,7 @@ public:
     record_type build_type();
     ss::future<checked<iceberg::struct_value, record_translator::errc>>
     translate_data(
+      invalid_record_cause cause,
       model::partition_id pid,
       kafka::offset o,
       std::optional<iobuf> key,

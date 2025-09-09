@@ -576,6 +576,7 @@ record_multiplexer::handle_invalid_record(
                                    .resolve_buf_type(std::move(val));
 
         auto record_data_res = co_await translator.translate_data(
+          cause,
           _ntp.tp.partition,
           offset,
           std::move(key),
