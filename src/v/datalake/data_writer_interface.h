@@ -32,6 +32,7 @@ enum class writer_error {
     shutting_down,
     out_of_disk,
     unknown_error,
+    halted_on_invalid_record,
 };
 std::ostream& operator<<(std::ostream&, const writer_error&);
 

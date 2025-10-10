@@ -36,6 +36,8 @@ std::ostream& operator<<(std::ostream& os, const writer_error& ev) {
         return os << "Unknown error";
     case writer_error::retryable_type_resolution_error:
         return os << "Retryable type resolution error";
+    case writer_error::halted_on_invalid_record:
+        return os << "Halted on invalid record";
     }
 }
 std::string data_writer_error_category::message(int ev) const {
@@ -65,6 +67,7 @@ bool is_recoverable_error(writer_error err) {
     case writer_error::oom_error:
     case writer_error::time_limit_exceeded:
     case writer_error::out_of_disk:
+    case writer_error::halted_on_invalid_record:
         return true;
     case writer_error::parquet_conversion_error:
     case writer_error::retryable_type_resolution_error:

@@ -58,6 +58,8 @@ translation_task::errc map_error_code(writer_error errc) {
         return translation_task::errc::file_io_error;
     case writer_error::retryable_type_resolution_error:
         return translation_task::errc::type_resolution_error;
+    case writer_error::halted_on_invalid_record:
+        return translation_task::errc::file_io_error;
     }
 }
 
