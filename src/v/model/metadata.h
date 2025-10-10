@@ -718,6 +718,8 @@ enum class iceberg_invalid_record_action : uint8_t {
     drop = 0,
     // Write invalid records to a dead letter queue table.
     dlq_table = 1,
+    // Halt translation and wait for user intervention.
+    halt = 2,
 };
 
 std::ostream& operator<<(std::ostream&, const iceberg_invalid_record_action&);

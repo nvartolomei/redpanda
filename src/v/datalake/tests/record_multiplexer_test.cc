@@ -29,6 +29,7 @@
 #include "model/timestamp.h"
 #include "random/generators.h"
 #include "storage/record_batch_builder.h"
+#include "test_utils/test.h"
 
 #include <avro/Compiler.hh>
 #include <gtest/gtest.h>
@@ -480,6 +481,74 @@ TEST_F(RecordMultiplexerTest, TestBadData) {
       get_or_create_probe(ntp)->counter_ref(
         translation_probe::invalid_record_cause::failed_data_translation),
       default_param.num_records());
+}
+
+TEST_F(RecordMultiplexerTest, TestBadDataHaltAction) {
+    direct_table_creator table_creator(type_resolver, schema_mgr);
+    auto mux = record_multiplexer(
+      ntp,
+      topic_rev,
+      std::make_unique<test_data_writer_factory>(false),
+      schema_mgr,
+      type_resolver,
+      translator,
+      table_creator,
+      model::iceberg_invalid_record_action::halt,
+      location_provider(scoped_remote->remote.local().provider(), bucket_name),
+      *get_or_create_probe(ntp),
+      &features);
+
+    tests::record_generator gen(&registry);
+    auto reg_res
+      = gen.register_avro_schema("avro_v1", avro_schema_v1_str).get();
+    EXPECT_FALSE(reg_res.has_error()) << reg_res.error();
+    auto schema_id = reg_res.value();
+
+    chunked_circular_buffer<model::record_batch> batches;
+    model::offset o{0};
+    for (size_t b = 0; b < 3; ++b) {
+        storage::record_batch_builder batch_builder(
+          model::record_batch_type::raft_data, model::offset{o});
+
+        // First batch contains only valid records.
+        if (b == 0) {
+            gen.add_random_avro_record(batch_builder, "avro_v1", std::nullopt)
+              .get();
+            ++o;
+            gen.add_random_avro_record(batch_builder, "avro_v1", std::nullopt)
+              .get();
+            ++o;
+        } else {
+            // Other batches contain one good record and rest bad.
+            gen.add_random_avro_record(batch_builder, "avro_v1", std::nullopt)
+              .get();
+            ++o;
+
+            // Add bad records.
+            for (size_t r = 0; r < 3; ++r) {
+                iobuf buf;
+                // Append data with a magic bytes that corresponds to the actual
+                // schema.
+                buf.append("\0", 1);
+                int32_t encoded_id = ss::cpu_to_be(schema_id());
+                buf.append((const uint8_t*)(&encoded_id), 4);
+                buf.append("\1\1\1", 3);
+                batch_builder.add_raw_kv(std::nullopt, std::move(buf));
+                ++o;
+            }
+        }
+
+        batches.emplace_back(std::move(batch_builder).build());
+    }
+
+    auto reader = model::make_memory_record_batch_reader(std::move(batches));
+
+    mux.multiplex(std::move(reader), kafka::offset{0}, model::no_timeout, as)
+      .get();
+
+    ASSERT_EQ(mux.flush_writers().get(), writer_error::unknown_error);
+    ASSERT_EQ(
+      mux.last_translated_offset(), std::make_optional(kafka::offset{2}));
 }
 
 TEST_F(RecordMultiplexerTest, TestBadSchemaChange) {

@@ -4311,6 +4311,7 @@ configuration::configuration()
       {
         model::iceberg_invalid_record_action::drop,
         model::iceberg_invalid_record_action::dlq_table,
+        model::iceberg_invalid_record_action::halt,
       })
   , iceberg_target_lag_ms(
       *this,

@@ -495,6 +495,15 @@ record_multiplexer::handle_invalid_record(
 
         co_return std::nullopt;
 
+    case model::iceberg_invalid_record_action::halt:
+        vlog(
+          _log.warn,
+          "Halting translation on invalid record at offset {}: {}",
+          offset,
+          cause);
+
+        co_return writer_error::unknown_error;
+
     case model::iceberg_invalid_record_action::dlq_table:
         vlog(
           _log.debug,

@@ -750,6 +750,8 @@ operator<<(std::ostream& os, const iceberg_invalid_record_action& a) {
         return os << "drop";
     case iceberg_invalid_record_action::dlq_table:
         return os << "dlq_table";
+    case iceberg_invalid_record_action::halt:
+        return os << "halt";
     }
 }
 
@@ -760,7 +762,8 @@ std::istream& operator>>(std::istream& is, iceberg_invalid_record_action& a) {
     try {
         a = string_switch<iceberg_invalid_record_action>(s)
               .match("drop", drop)
-              .match("dlq_table", dlq_table);
+              .match("dlq_table", dlq_table)
+              .match("halt", halt);
     } catch (const std::runtime_error&) {
         is.setstate(std::ios::failbit);
     }
