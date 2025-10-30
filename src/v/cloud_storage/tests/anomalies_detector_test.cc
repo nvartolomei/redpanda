@@ -18,6 +18,7 @@
 #include "cloud_storage/partition_path_utils.h"
 #include "cloud_storage/remote.h"
 #include "cloud_storage/remote_path_provider.h"
+#include "cloud_storage/remote_service.h"
 #include "cloud_storage/spillover_manifest.h"
 #include "cloud_storage/types.h"
 #include "config/node_config.h"
@@ -253,14 +254,15 @@ public:
           .get();
         _io.invoke_on_all([](cloud_io::remote& io) { return io.start(); })
           .get();
+        _remote_svc.start().get();
+        _remote_svc.invoke_on_all(&cloud_storage::remote_service::start).get();
         _remote
-          .start(std::ref(_io), ss::sharded_parameter([this] {
-                     return get_client_configuration();
-                 }))
-          .get();
-
-        _remote
-          .invoke_on_all([](cloud_storage::remote& api) { return api.start(); })
+          .start(
+            ss::sharded_parameter(
+              [this] { return std::ref(_remote_svc.local()); }),
+            std::ref(_io),
+            ss::sharded_parameter(
+              [this] { return get_client_configuration(); }))
           .get();
     }
 
@@ -269,6 +271,7 @@ public:
             _pool.local().shutdown_connections();
         }
         _remote.stop().get();
+        _remote_svc.stop().get();
         _io.stop().get();
         _pool.stop().get();
     }
@@ -559,6 +562,7 @@ private:
 
     ss::sharded<cloud_storage_clients::client_pool> _pool;
     ss::sharded<cloud_io::remote> _io;
+    ss::sharded<cloud_storage::remote_service> _remote_svc;
     ss::sharded<cloud_storage::remote> _remote;
 
     cloud_storage::partition_manifest _stm_manifest;

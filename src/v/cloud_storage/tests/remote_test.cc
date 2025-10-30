@@ -13,22 +13,18 @@
 #include "bytes/iobuf_parser.h"
 #include "bytes/iostream.h"
 #include "cloud_io/tests/s3_imposter.h"
-#include "cloud_storage/base_manifest.h"
 #include "cloud_storage/materialized_resources.h"
-#include "cloud_storage/offset_translation_layer.h"
 #include "cloud_storage/partition_manifest.h"
 #include "cloud_storage/partition_manifest_downloader.h"
 #include "cloud_storage/remote.h"
 #include "cloud_storage/remote_path_provider.h"
-#include "cloud_storage/remote_segment.h"
+#include "cloud_storage/remote_service.h"
 #include "cloud_storage/segment_path_utils.h"
 #include "cloud_storage/tests/common_def.h"
 #include "cloud_storage/types.h"
 #include "cloud_storage_clients/client_pool.h"
 #include "config/configuration.h"
-#include "config/node_config.h"
 #include "model/metadata.h"
-#include "storage/directories.h"
 #include "test_utils/async.h"
 #include "test_utils/tmp_dir.h"
 #include "utils/lazy_abort_source.h"
@@ -90,7 +86,7 @@ static lazy_abort_source always_continue{[]() { return std::nullopt; }};
 static constexpr model::cloud_credentials_source config_file{
   model::cloud_credentials_source::config_file};
 
-static remote::event_filter allow_all;
+static event_filter allow_all;
 
 static iobuf make_iobuf_from_string(std::string_view s) {
     iobuf b;
@@ -129,20 +125,29 @@ public:
             ss::sharded_parameter(
               [] { return ss::default_scheduling_group(); }))
           .get();
+        remote_service.start().get();
+        remote_service.invoke_on_all(&cloud_storage::remote_service::start)
+          .get();
         remote
-          .start(std::ref(io), ss::sharded_parameter([this] { return conf; }))
+          .start(
+            ss::sharded_parameter(
+              [this] { return std::ref(remote_service.local()); }),
+            std::ref(io),
+            ss::sharded_parameter([this] { return conf; }))
           .get();
     }
     ~remote_fixture_base() {
         pool.local().shutdown_connections();
         io.local().request_stop();
         remote.stop().get();
+        remote_service.stop().get();
         io.stop().get();
         pool.stop().get();
     }
 
     ss::sharded<cloud_storage_clients::client_pool> pool;
     ss::sharded<cloud_io::remote> io;
+    ss::sharded<remote_service> remote_service;
     ss::sharded<remote> remote;
 };
 
@@ -1017,7 +1022,7 @@ TEST_P(all_types_remote_fixture, test_filter_by_source) { // NOLINT
       .url = manifest_url, .body = ss::sstring(manifest_payload)}});
     auto conf = get_configuration();
     retry_chain_node root_rtc(never_abort, 100ms, 20ms);
-    remote::event_filter flt;
+    event_filter flt;
     flt.add_source_to_ignore(&root_rtc);
 
     auto subscription = remote.local().subscribe(flt);
@@ -1076,8 +1081,8 @@ TEST_P(all_types_remote_fixture, test_filter_by_type) { // NOLINT
     retry_chain_node root_rtc(never_abort, 100ms, 20ms);
     partition_manifest actual(manifest_ntp, manifest_revision);
 
-    remote::event_filter flt1({api_activity_type::manifest_download});
-    remote::event_filter flt2({api_activity_type::manifest_upload});
+    event_filter flt1({api_activity_type::manifest_download});
+    event_filter flt2({api_activity_type::manifest_upload});
     auto subscription1 = remote.local().subscribe(flt1);
     auto subscription2 = remote.local().subscribe(flt2);
 
@@ -1108,7 +1113,7 @@ TEST_P(all_types_remote_fixture, test_filter_lifetime_1) { // NOLINT
     retry_chain_node root_rtc(never_abort, 100ms, 20ms);
     partition_manifest actual(manifest_ntp, manifest_revision);
 
-    std::optional<remote::event_filter> flt;
+    std::optional<event_filter> flt;
     flt.emplace();
     auto subscription = remote.local().subscribe(*flt);
     retry_chain_node child_rtc(&root_rtc);
@@ -1126,7 +1131,7 @@ TEST_P(all_types_remote_fixture, test_filter_lifetime_1) { // NOLINT
 }
 
 TEST_P(all_types_remote_fixture, test_filter_lifetime_2) { // NOLINT
-    std::optional<remote::event_filter> flt;
+    std::optional<event_filter> flt;
     flt.emplace();
     auto subscription = remote.local().subscribe(*flt);
     flt.reset();
@@ -1308,7 +1313,7 @@ TEST_P(all_types_remote_fixture, test_notification_retry_meta) {
 
     retry_chain_node fib(never_abort, 500ms, 10ms);
     partition_manifest actual(manifest_ntp, manifest_revision);
-    auto filter = remote::event_filter{};
+    auto filter = event_filter{};
 
     remote_path_provider path_provider(std::nullopt, std::nullopt);
     partition_manifest_downloader dl(
@@ -1412,6 +1417,7 @@ INSTANTIATE_TEST_SUITE_P(
 TEST(RemoteTest, TestShutdownOnRetry) {
     ss::sharded<cloud_storage_clients::client_pool> pool;
     ss::sharded<cloud_io::remote> io;
+    ss::sharded<remote_service> remote_service;
     ss::sharded<remote> remote;
 
     s3_imposter_fixture s3;
@@ -1433,7 +1439,14 @@ TEST(RemoteTest, TestShutdownOnRetry) {
         ss::sharded_parameter([&] { return config_file; }),
         ss::sharded_parameter([] { return ss::default_scheduling_group(); }))
       .get();
-    remote.start(std::ref(io), ss::sharded_parameter([&s3] { return s3.conf; }))
+    remote_service.start().get();
+    remote_service.invoke_on_all(&cloud_storage::remote_service::start).get();
+    remote
+      .start(
+        ss::sharded_parameter(
+          [&remote_service] { return std::ref(remote_service.local()); }),
+        std::ref(io),
+        ss::sharded_parameter([&s3] { return s3.conf; }))
       .get();
 
     s3.fail_request_if(
@@ -1457,6 +1470,7 @@ TEST(RemoteTest, TestShutdownOnRetry) {
     pool.local().shutdown_connections();
     io.local().request_stop();
     remote.stop().get();
+    remote_service.stop().get();
     stopped_remote = true;
 
     // Regression test for CORE-10019. Previously the downloads could result in

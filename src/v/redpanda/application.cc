@@ -1744,12 +1744,21 @@ void application::wire_up_redpanda_services(
     if (archival_storage_enabled()) {
         syschecks::systemd_message("Starting cloud storage api").get();
         construct_service(
+          cloud_storage_remote_svc,
+          ss::sharded_parameter([this] { return std::ref(cloud_io.local()); }))
+          .get();
+        cloud_storage_remote_svc
+          .invoke_on_all(&cloud_storage::remote_service::start)
+          .get();
+
+        construct_service(
           cloud_storage_api,
+          ss::sharded_parameter(
+            [this] { return std::ref(cloud_storage_remote_svc.local()); }),
           std::ref(cloud_io),
           ss::sharded_parameter(
             [&cloud_configs] { return cloud_configs.local(); }))
           .get();
-        cloud_storage_api.invoke_on_all(&cloud_storage::remote::start).get();
 
         construct_service(
           partition_recovery_manager,
@@ -1814,7 +1823,11 @@ void application::wire_up_redpanda_services(
       std::ref(storage),
       std::ref(raft_group_manager),
       std::ref(partition_recovery_manager),
-      std::ref(cloud_storage_api),
+      ss::sharded_parameter([this] {
+          return cloud_storage_remote_svc.local_is_initialized()
+                   ? &cloud_storage_remote_svc.local()
+                   : nullptr;
+      }),
       std::ref(shadow_index_cache),
       ss::sharded_parameter(
         [sg = sched_groups.archival_upload(),

@@ -30,7 +30,7 @@ class async_manifest_materializer {
 public:
     async_manifest_materializer(
       cloud_storage_clients::bucket_name,
-      ss::sharded<remote>*,
+      remote&,
       ss::sharded<cloud_io::cache>*,
       const remote_path_provider*,
       const partition_manifest*);
@@ -90,7 +90,7 @@ private:
     retry_chain_logger _ctxlog;
 
     cloud_storage_clients::bucket_name _bucket;
-    ss::sharded<remote>* _remote;
+    remote& _remote;
     ss::sharded<cloud_io::cache>* _cache;
     const remote_path_provider* _remote_path_provider;
     const partition_manifest* _stm_manifest;

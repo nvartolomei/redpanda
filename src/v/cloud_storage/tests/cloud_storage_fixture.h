@@ -14,6 +14,7 @@
 #include "cloud_io/cache_service.h"
 #include "cloud_io/tests/s3_imposter.h"
 #include "cloud_storage/remote.h"
+#include "cloud_storage/remote_service.h"
 #include "cloud_storage/tests/common_def.h"
 #include "cloud_storage/types.h"
 #include "storage/disk.h"
@@ -81,12 +82,15 @@ struct cloud_storage_fixture : s3_imposter_fixture {
           .invoke_on_all(
             [](cloud_io::remote& cloud_io) { return cloud_io.start(); })
           .get();
-        api
-          .start(
-            std::ref(cloud_io), ss::sharded_parameter([this] { return conf; }))
+        remote_service.start().get();
+        remote_service.invoke_on_all(&cloud_storage::remote_service::start)
           .get();
         api
-          .invoke_on_all([](cloud_storage::remote& api) { return api.start(); })
+          .start(
+            ss::sharded_parameter(
+              [this] { return std::ref(remote_service.local()); }),
+            std::ref(cloud_io),
+            ss::sharded_parameter([this] { return conf; }))
           .get();
     }
 
@@ -95,6 +99,7 @@ struct cloud_storage_fixture : s3_imposter_fixture {
             pool.local().shutdown_connections();
         }
         api.stop().get();
+        remote_service.stop().get();
         cloud_io.stop().get();
         pool.stop().get();
         cache.stop().get();
@@ -114,5 +119,6 @@ struct cloud_storage_fixture : s3_imposter_fixture {
     ss::sharded<cloud_io::cache> cache;
     ss::sharded<cloud_storage_clients::client_pool> pool;
     ss::sharded<cloud_io::remote> cloud_io;
+    ss::sharded<remote_service> remote_service;
     ss::sharded<remote> api;
 };

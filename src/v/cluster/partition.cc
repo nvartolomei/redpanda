@@ -44,7 +44,7 @@ namespace cluster {
 
 partition::partition(
   consensus_ptr r,
-  ss::sharded<cloud_storage::remote>& cloud_storage_api,
+  ss::lw_shared_ptr<cloud_storage::remote> cloud_storage_remote,
   ss::sharded<cloud_io::cache>& cloud_storage_cache,
   ss::lw_shared_ptr<const archival::configuration> archival_conf,
   ss::sharded<features::feature_table>& feature_table,
@@ -56,7 +56,7 @@ partition::partition(
   , _probe(std::make_unique<replicated_partition_probe>(*this))
   , _feature_table(feature_table)
   , _archival_conf(std::move(archival_conf))
-  , _cloud_storage_api(cloud_storage_api)
+  , _cloud_storage_remote(std::move(cloud_storage_remote))
   , _cloud_storage_cache(cloud_storage_cache)
   , _cloud_storage_probe(
       ss::make_shared<cloud_storage::partition_probe>(_raft->ntp()))
@@ -65,7 +65,7 @@ partition::partition(
     // Construct cloud_storage read path (remote_partition)
     if (
       config::shard_local_cfg().cloud_storage_enabled()
-      && _cloud_storage_api.local_is_initialized()
+      && _cloud_storage_remote != nullptr
       && _raft->ntp().ns == model::kafka_namespace) {
         if (_cloud_storage_cache.local_is_initialized()) {
             const auto& bucket_config
@@ -506,7 +506,7 @@ ss::future<> partition::start(
 
         _cloud_storage_manifest_view
           = ss::make_shared<cloud_storage::async_manifest_view>(
-            _cloud_storage_api,
+            *_cloud_storage_remote,
             _cloud_storage_cache,
             _archival_meta_stm->manifest(),
             cloud_storage_clients::bucket_name{*bucket},
@@ -515,7 +515,7 @@ ss::future<> partition::start(
         _cloud_storage_partition
           = ss::make_shared<cloud_storage::remote_partition>(
             _cloud_storage_manifest_view,
-            _cloud_storage_api.local(),
+            _cloud_storage_remote,
             _cloud_storage_cache.local(),
             cloud_storage_clients::bucket_name{*bucket},
             *_cloud_storage_probe);
@@ -789,7 +789,7 @@ bool partition::should_construct_archiver() {
     const auto& ntp_config = _raft->log()->config();
     return config::shard_local_cfg().cloud_storage_enabled()
            && config::shard_local_cfg().cloud_storage_disable_archiver_manager()
-           && _cloud_storage_api.local_is_initialized()
+           && _cloud_storage_remote
            // The archiver can only be created for partitions that belong to
            // user topics. This includes everything inside the kafka namespace
            // except for the kafka consumer offsets topic. The consumer offsets
@@ -809,7 +809,7 @@ void partition::maybe_construct_archiver() {
         _archiver = std::make_unique<archival::ntp_archiver>(
           ntp_config,
           _archival_conf,
-          _cloud_storage_api.local(),
+          *_cloud_storage_remote,
           _cloud_storage_cache.local(),
           *this,
           _cloud_storage_manifest_view);
@@ -1364,7 +1364,7 @@ partition::fetch_latest_cloud_offset_from_manifest(
       _archival_meta_stm->path_provider(),
       ntp(),
       initial_rev,
-      _cloud_storage_api.local());
+      *_cloud_storage_remote);
 
     auto res = co_await dl.download_manifest(rtc, &new_manifest);
     if (res.has_error()) {
@@ -1413,7 +1413,7 @@ partition::do_unsafe_reset_remote_partition_manifest_from_cloud(bool force) {
       _archival_meta_stm->path_provider(),
       ntp(),
       initial_rev,
-      _cloud_storage_api.local());
+      *_cloud_storage_remote);
     auto res = co_await dl.download_manifest(rtc, &new_manifest);
     if (res.has_error()) {
         throw std::runtime_error(

@@ -21,7 +21,7 @@ namespace cloud_storage {
 
 async_manifest_materializer::async_manifest_materializer(
   cloud_storage_clients::bucket_name bucket,
-  ss::sharded<remote>* remote,
+  remote& remote,
   ss::sharded<cloud_io::cache>* cache,
   const remote_path_provider* path_provider,
   const partition_manifest* stm_manifest)
@@ -40,9 +40,8 @@ async_manifest_materializer::async_manifest_materializer(
       config::shard_local_cfg().storage_read_readahead_count.bind())
   , _manifest_meta_ttl(
       config::shard_local_cfg().cloud_storage_manifest_cache_ttl_ms.bind())
-  , _manifest_cache(
-      &_remote->local().materialized().get_materialized_manifest_cache())
-  , _ts_probe(&remote->local().materialized().get_read_path_probe())
+  , _manifest_cache(&_remote.materialized().get_materialized_manifest_cache())
+  , _ts_probe(&_remote.materialized().get_read_path_probe())
 
 {}
 
@@ -325,7 +324,7 @@ async_manifest_materializer::hydrate_manifest(
         retry_chain_node fib(_timeout(), _backoff(), &_rtcnode);
         // Spillover manifests are always serde-encoded
         auto fk = std::make_pair(manifest_format::serde, path);
-        auto res = co_await _remote->local().download_manifest(
+        auto res = co_await _remote.download_manifest(
           _bucket, fk, manifest, fib);
         if (res != download_result::success) {
             vlog(

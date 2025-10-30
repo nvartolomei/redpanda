@@ -11,6 +11,7 @@
 #pragma once
 
 #include "cloud_storage/remote.h"
+#include "cloud_storage/remote_service.h"
 #include "cloud_storage/types.h"
 #include "cloud_storage_clients/client_pool.h"
 #include "cluster/archival/ntp_archiver_service.h"
@@ -209,6 +210,7 @@ public:
 
     ss::sharded<cloud_storage_clients::client_pool> pool;
     ss::sharded<cloud_io::remote> io;
+    ss::sharded<cloud_storage::remote_service> remote_svc;
     ss::sharded<cloud_storage::remote> remote;
 
 private:

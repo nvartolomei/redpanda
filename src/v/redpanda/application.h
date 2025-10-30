@@ -13,6 +13,7 @@
 
 #include "base/seastarx.h"
 #include "cloud_storage/fwd.h"
+#include "cloud_storage/remote_service.h"
 #include "cloud_storage_clients/client_pool.h"
 #include "cloud_topics/app.h"
 #include "cluster/archival/fwd.h"
@@ -128,6 +129,7 @@ public:
       partition_recovery_manager;
     ss::sharded<cloud_storage_clients::client_pool> cloud_storage_clients;
     ss::sharded<cloud_io::remote> cloud_io;
+    ss::sharded<cloud_storage::remote_service> cloud_storage_remote_svc;
     ss::sharded<cloud_storage::remote> cloud_storage_api;
     ss::sharded<archival::upload_housekeeping_service>
       archival_upload_housekeeping;

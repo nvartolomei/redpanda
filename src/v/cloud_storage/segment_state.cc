@@ -35,8 +35,9 @@ materialized_segment_state::materialized_segment_state(
   : atime(ss::lowres_clock::now())
   , parent(p.weak_from_this())
   , _units(std::move(u)) {
+    // TODO: This leaks beyond the lifetime of remote_partition.
     segment = ss::make_lw_shared<remote_segment>(
-      p._api,
+      *p._remote,
       p._cache,
       p._bucket,
       path,

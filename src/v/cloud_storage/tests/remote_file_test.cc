@@ -15,6 +15,7 @@
 #include "cloud_storage/download_exception.h"
 #include "cloud_storage/remote.h"
 #include "cloud_storage/remote_file.h"
+#include "cloud_storage/remote_service.h"
 #include "test_utils/boost_fixture.h"
 #include "utils/lazy_abort_source.h"
 
@@ -59,10 +60,15 @@ public:
             ss::sharded_parameter(
               [] { return ss::default_scheduling_group(); }))
           .get();
+        remote_service.start().get();
+        remote_service.invoke_on_all(&cloud_storage::remote_service::start)
+          .get();
         remote
-          .start(std::ref(io), ss::sharded_parameter([this] {
-                     return get_configuration();
-                 }))
+          .start(
+            ss::sharded_parameter(
+              [this] { return std::ref(remote_service.local()); }),
+            std::ref(io),
+            ss::sharded_parameter([this] { return get_configuration(); }))
           .get();
         set_expectations_and_listen({});
     }
@@ -102,6 +108,7 @@ public:
         pool.local().shutdown_connections();
         io.local().request_stop();
         remote.stop().get();
+        remote_service.stop().get();
         io.stop().get();
         pool.stop().get();
     }
@@ -109,6 +116,7 @@ public:
     temporary_dir data_dir;
     ss::sharded<cloud_storage_clients::client_pool> pool;
     ss::sharded<cloud_io::remote> io;
+    ss::sharded<remote_service> remote_service;
     ss::sharded<remote> remote;
 };
 

@@ -54,7 +54,7 @@ partition_manager::partition_manager(
   ss::sharded<storage::api>& storage,
   ss::sharded<raft::group_manager>& raft,
   ss::sharded<cloud_storage::partition_recovery_manager>& recovery_mgr,
-  ss::sharded<cloud_storage::remote>& cloud_storage_api,
+  cloud_storage::remote_service* cloud_storage_remote_svc,
   ss::sharded<cloud_io::cache>& cloud_storage_cache,
   ss::lw_shared_ptr<const archival::configuration> archival_conf,
   ss::sharded<features::feature_table>& feature_table,
@@ -64,7 +64,7 @@ partition_manager::partition_manager(
   : _storage(storage.local())
   , _raft_manager(raft)
   , _partition_recovery_mgr(recovery_mgr)
-  , _cloud_storage_api(cloud_storage_api)
+  , _cloud_storage_remote_svc(cloud_storage_remote_svc)
   , _cloud_storage_cache(cloud_storage_cache)
   , _archival_conf(std::move(archival_conf))
   , _feature_table(feature_table)
@@ -294,9 +294,14 @@ ss::future<consensus_ptr> partition_manager::manage(
         enable_learner_recovery_throttle,
         keep_snapshotted_log);
 
+    ss::lw_shared_ptr<cloud_storage::remote> cloud_storage_remote = nullptr;
+    if (_cloud_storage_remote_svc != nullptr) {
+        cloud_storage_remote = _cloud_storage_remote_svc->remote();
+    }
+
     auto p = ss::make_lw_shared<partition>(
       c,
-      _cloud_storage_api,
+      std::move(cloud_storage_remote),
       _cloud_storage_cache,
       _archival_conf,
       _feature_table,

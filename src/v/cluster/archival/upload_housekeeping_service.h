@@ -10,6 +10,7 @@
 #pragma once
 
 #include "cloud_storage/remote.h"
+#include "cloud_storage/remote_events.h"
 #include "cluster/archival/fwd.h"
 #include "cluster/archival/probe.h"
 #include "cluster/archival/types.h"
@@ -240,7 +241,7 @@ private:
     /// Quota to be shared between jobs in one interation of the housekeeping
     /// loop
     config::binding<int32_t> _raw_quota;
-    cloud_storage::remote::event_filter _filter;
+    cloud_storage::event_filter _filter;
     upload_housekeeping_probe _probe;
     housekeeping_workflow _workflow;
     static constexpr auto ma_resolution = 20ms;

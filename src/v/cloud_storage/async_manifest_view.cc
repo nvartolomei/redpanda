@@ -380,7 +380,7 @@ void async_manifest_view_cursor::on_timeout() {
 }
 
 async_manifest_view::async_manifest_view(
-  ss::sharded<remote>& remote,
+  remote& remote,
   ss::sharded<cloud_io::cache>& cache,
   const partition_manifest& stm_manifest,
   cloud_storage_clients::bucket_name bucket,
@@ -393,7 +393,7 @@ async_manifest_view::async_manifest_view(
       config::shard_local_cfg().cloud_storage_manifest_cache_ttl_ms.bind())
   , _materializer(
       std::move(bucket),
-      &remote,
+      remote,
       &cache,
       &_remote_path_provider,
       &stm_manifest) {}

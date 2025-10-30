@@ -51,7 +51,7 @@ class partition : public ss::enable_lw_shared_from_this<partition> {
 public:
     partition(
       consensus_ptr r,
-      ss::sharded<cloud_storage::remote>&,
+      ss::lw_shared_ptr<cloud_storage::remote> cloud_storage_remote,
       ss::sharded<cloud_io::cache>&,
       ss::lw_shared_ptr<const archival::configuration>,
       ss::sharded<features::feature_table>&,
@@ -438,7 +438,7 @@ private:
     partition_probe _probe;
     ss::sharded<features::feature_table>& _feature_table;
     ss::lw_shared_ptr<const archival::configuration> _archival_conf;
-    ss::sharded<cloud_storage::remote>& _cloud_storage_api;
+    ss::lw_shared_ptr<cloud_storage::remote> _cloud_storage_remote;
     ss::sharded<cloud_io::cache>& _cloud_storage_cache;
     ss::shared_ptr<cloud_storage::partition_probe> _cloud_storage_probe;
     ss::shared_ptr<cloud_storage::async_manifest_view>

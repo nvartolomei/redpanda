@@ -9,6 +9,7 @@
  */
 #include "cloud_io/tests/s3_imposter.h"
 #include "cloud_storage/remote.h"
+#include "cloud_storage/remote_service.h"
 #include "cloud_storage/topic_mount_handler.h"
 #include "cloud_storage/types.h"
 #include "cloud_storage_clients/client_pool.h"
@@ -65,20 +66,29 @@ struct TopicMountHandlerFixture : public s3_imposter_fixture {
             ss::sharded_parameter(
               [] { return ss::default_scheduling_group(); }))
           .get();
+        remote_service.start().get();
+        remote_service.invoke_on_all(&cloud_storage::remote_service::start)
+          .get();
         remote
-          .start(std::ref(io), ss::sharded_parameter([this] { return conf; }))
+          .start(
+            ss::sharded_parameter(
+              [this] { return std::ref(remote_service.local()); }),
+            std::ref(io),
+            ss::sharded_parameter([this] { return conf; }))
           .get();
     }
 
     ~TopicMountHandlerFixture() {
         pool.local().shutdown_connections();
         remote.stop().get();
+        remote_service.stop().get();
         io.stop().get();
         pool.stop().get();
     }
 
     ss::sharded<cloud_storage_clients::client_pool> pool;
     ss::sharded<cloud_io::remote> io;
+    ss::sharded<remote_service> remote_service;
     ss::sharded<remote> remote;
 };
 

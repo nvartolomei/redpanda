@@ -14,6 +14,7 @@
 #include "cloud_storage/partition_manifest_downloader.h"
 #include "cloud_storage/partition_path_utils.h"
 #include "cloud_storage/remote.h"
+#include "cloud_storage/remote_service.h"
 #include "cloud_storage_clients/client_pool.h"
 #include "model/fundamental.h"
 
@@ -72,8 +73,15 @@ public:
             ss::sharded_parameter(
               [] { return ss::default_scheduling_group(); }))
           .get();
+        remote_service_.start().get();
+        remote_service_.invoke_on_all(&cloud_storage::remote_service::start)
+          .get();
         remote_
-          .start(std::ref(io_), ss::sharded_parameter([this] { return conf; }))
+          .start(
+            ss::sharded_parameter(
+              [this] { return std::ref(remote_service_.local()); }),
+            std::ref(io_),
+            ss::sharded_parameter([this] { return conf; }))
           .get();
         // Tests will use the remote API, no hard coded responses.
         set_expectations_and_listen({});
@@ -83,6 +91,7 @@ public:
         pool_.local().shutdown_connections();
         io_.local().request_stop();
         remote_.stop().get();
+        remote_service_.stop().get();
         io_.stop().get();
         pool_.stop().get();
     }
@@ -134,6 +143,7 @@ public:
 protected:
     ss::sharded<cloud_storage_clients::client_pool> pool_;
     ss::sharded<cloud_io::remote> io_;
+    ss::sharded<remote_service> remote_service_;
     ss::sharded<remote> remote_;
 };
 

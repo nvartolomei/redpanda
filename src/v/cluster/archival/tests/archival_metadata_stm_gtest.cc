@@ -9,6 +9,7 @@
 
 #include "cloud_io/remote.h"
 #include "cloud_storage/remote.h"
+#include "cloud_storage/remote_service.h"
 #include "cloud_storage/types.h"
 #include "cloud_storage_clients/client_pool.h"
 #include "cluster/archival/archival_metadata_stm.h"
@@ -29,8 +30,6 @@
 #include <seastar/util/later.hh>
 
 #include <gtest/gtest.h>
-
-#include <exception>
 
 using cloud_storage::segment_name;
 using segment_meta = cloud_storage::partition_manifest::segment_meta;
@@ -71,6 +70,7 @@ struct archival_stm_node {
     ss::shared_ptr<cluster::archival_metadata_stm> archival_stm;
     ss::sharded<cloud_storage_clients::client_pool> client_pool;
     ss::sharded<cloud_io::remote> cloud_io;
+    ss::sharded<cloud_storage::remote_service> remote_svc;
     ss::sharded<cloud_storage::remote> remote;
 };
 
@@ -83,7 +83,8 @@ public:
           _archival_stm_nodes, [](archival_stm_node& node) {
               return node.remote.stop()
                 .then([&node]() { return node.cloud_io.stop(); })
-                .then([&node]() { return node.client_pool.stop(); });
+                .then([&node]() { return node.client_pool.stop(); })
+                .then([&node]() { return node.remote_svc.stop(); });
           });
 
         co_await raft::raft_fixture::TearDownAsync();
@@ -105,8 +106,12 @@ public:
               ss::sharded_parameter([] { return config_file; }),
               ss::sharded_parameter(
                 [] { return ss::default_scheduling_group(); }));
-
+            co_await stm_node.remote_svc.start();
+            co_await stm_node.remote_svc.invoke_on_all(
+              &cloud_storage::remote_service::start);
             co_await stm_node.remote.start(
+              ss::sharded_parameter(
+                [&stm_node] { return std::ref(stm_node.remote_svc.local()); }),
               std::ref(stm_node.cloud_io),
               ss::sharded_parameter([] { return get_configuration(); }));
 

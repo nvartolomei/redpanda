@@ -921,19 +921,19 @@ private:
 
 remote_partition::remote_partition(
   ss::shared_ptr<async_manifest_view> m,
-  remote& api,
+  ss::lw_shared_ptr<remote> remote,
   cloud_io::cache& c,
   cloud_storage_clients::bucket_name bucket,
   partition_probe& probe)
   : _ntp(m->get_ntp())
   , _rtc(_as)
   , _ctxlog(cst_log, _rtc, m->get_ntp().path())
-  , _api(api)
+  , _remote(std::move(remote))
   , _cache(c)
   , _manifest_view(m)
   , _bucket(std::move(bucket))
   , _probe(probe)
-  , _ts_probe(api.materialized().get_read_path_probe()) {}
+  , _ts_probe(_remote->materialized().get_read_path_probe()) {}
 
 ss::future<> remote_partition::start() {
     // Fiber that consumers from _eviction_list and calls stop on items before
@@ -1232,7 +1232,7 @@ ss::future<storage::translating_reader> remote_partition::make_reader(
       config,
       _segments.size());
 
-    auto units = co_await _api.materialized().get_partition_reader_units(
+    auto units = co_await _remote->materialized().get_partition_reader_units(
       config.abort_source);
     auto ot_state = ss::make_lw_shared<storage::offset_translator_state>(
       get_ntp());
@@ -1326,8 +1326,10 @@ struct finalize_data {
 /// Precondition: the caller must ensure that api object is valid for the
 /// duration of this function. I.e. hold a gate.
 ss::future<> finalize_in_background(
-  remote& api, finalize_data data, remote_path_provider path_provider) {
-    ss::abort_source& as = api.as();
+  ss::lw_shared_ptr<remote> api,
+  finalize_data data,
+  remote_path_provider path_provider) {
+    ss::abort_source& as = api->as();
 
     retry_chain_node local_rtc(
       as,
@@ -1342,7 +1344,7 @@ ss::future<> finalize_in_background(
     // haven't received yet the command informing us that remote manifest is
     // clean), it might exist and we should try to use it if so.
     partition_manifest_downloader dl(
-      data.bucket, path_provider, data.ntp, data.revision, api);
+      data.bucket, path_provider, data.ntp, data.revision, *api);
     auto manifest_get_result = co_await dl.download_manifest(
       local_rtc, &remote_manifest);
     if (manifest_get_result.has_error()) {
@@ -1399,7 +1401,7 @@ ss::future<> finalize_in_background(
 
         const auto key = cloud_storage_clients::object_key{
           path_provider.partition_manifest_path(data.ntp, data.revision)};
-        auto manifest_put_result = co_await api.upload_object(
+        auto manifest_put_result = co_await api->upload_object(
           {.transfer_details
            = {.bucket = data.bucket, .key = key, .parent_rtc = local_rtc},
            .type = upload_type::manifest,
@@ -1451,8 +1453,8 @@ void remote_partition::finalize(bool remote_manifest_expected) {
     };
 
     ssx::spawn_with_gate(
-      _api.gate(),
-      [&api = _api,
+      _remote->gate(),
+      [&api = _remote,
        data = std::move(data),
        pp = _manifest_view->path_provider().copy()]() mutable -> ss::future<> {
           return finalize_in_background(api, std::move(data), pp.copy());
@@ -1555,7 +1557,7 @@ void remote_partition::offload_segment(model::offset o) {
 }
 
 materialized_resources& remote_partition::materialized() {
-    return _api.materialized();
+    return _remote->materialized();
 }
 
 cache_usage_target remote_partition::get_cache_usage_target() const {

@@ -17,9 +17,9 @@
 #include "cloud_storage/base_manifest.h"
 #include "cloud_storage/configuration.h"
 #include "cloud_storage/fwd.h"
-#include "cloud_storage/read_path_probes.h"
 #include "cloud_storage/remote_probe.h"
 #include "cloud_storage/remote_segment_index.h"
+#include "cloud_storage/remote_service.h"
 #include "cloud_storage/types.h"
 #include "cloud_storage_clients/client.h"
 #include "cloud_storage_clients/client_pool.h"
@@ -43,23 +43,6 @@ namespace cloud_storage {
 class materialized_resources;
 
 inline constexpr ss::shard_id auth_refresh_shard_id = 0;
-
-enum class api_activity_type {
-    segment_upload,
-    segment_download,
-    segment_delete,
-    manifest_upload,
-    manifest_download,
-    controller_snapshot_upload,
-    controller_snapshot_download,
-    object_upload,
-    object_download
-};
-
-struct api_activity_notification {
-    api_activity_type type;
-    bool is_retry;
-};
 
 // Enables creating mocks from remote. A mock class should be extended from this
 // interface in tests, and methods in real code should accept
@@ -137,11 +120,15 @@ public:
     using list_objects_consumer = std::function<ss::stop_iteration(
       ss::sstring, std::chrono::system_clock::time_point, size_t, ss::sstring)>;
 
+    remote(cloud_storage::remote_service& remote_svc, cloud_io::remote& io);
+
     /// \brief Initialize 'remote'
     ///
-    /// \param limit is a number of simultaneous connections
+    /// \param remote_svc is the shard-local remote service
+    /// \param io cloud IO service
     /// \param conf is an S3 configuration
     remote(
+      cloud_storage::remote_service& remote_svc,
       ss::sharded<cloud_io::remote>& io,
       const cloud_storage_clients::client_configuration& conf);
 
@@ -149,16 +136,15 @@ public:
 
     /// \brief Initialize 'remote'
     ///
+    /// \param remote_svc is the shard-local remote service
+    /// \param io cloud IO service
     /// \param conf is an archival configuration
     explicit remote(
-      ss::sharded<cloud_io::remote>& io, const configuration& conf);
+      cloud_storage::remote_service& remote_svc,
+      ss::sharded<cloud_io::remote>& io,
+      const configuration& conf);
 
-    /// \brief Start the remote
-    ss::future<> start();
-
-    const cloud_io::io_resources& resources() const {
-        return _io.local().resources();
-    }
+    const cloud_io::io_resources& resources() const { return _io.resources(); }
 
     /// \brief Stop the remote
     ///
@@ -417,91 +403,29 @@ public:
       retry_chain_node& parent,
       bool expect_missing = false);
 
-    materialized_resources& materialized() { return *_materialized; }
-
-    /// Event filter class.
-    ///
-    /// The filter can be used to subscribe to subset of events.
-    /// For instance, only to segment downloads and uploads, or to
-    /// events from all sybsystems except one.
-    /// The filter is a RAII object. It works until the object
-    /// exists. If the filter is destroyed before the notification
-    /// will be received the receiver of the event will see broken
-    /// promise error.
-    class event_filter {
-        friend class remote;
-
-    public:
-        event_filter() = default;
-
-        explicit event_filter(
-          std::unordered_set<api_activity_type> ignored_events)
-          : _events_to_ignore(std::move(ignored_events)) {}
-
-        void add_source_to_ignore(const retry_chain_node* source) {
-            _sources_to_ignore.insert(source);
-        }
-
-        void remove_source_to_ignore(const retry_chain_node* source) {
-            _sources_to_ignore.erase(source);
-        }
-
-        void cancel() {
-            if (_promise.has_value()) {
-                _hook.unlink();
-                _promise.reset();
-            }
-        }
-
-    private:
-        absl::node_hash_set<const retry_chain_node*> _sources_to_ignore;
-        std::unordered_set<api_activity_type> _events_to_ignore;
-        std::optional<ss::promise<api_activity_notification>> _promise;
-        intrusive_list_hook _hook;
-    };
-
-    /// Return future that will become available on next cloud storage
-    /// api operation.
-    ///
-    /// \note The operations which are trigger notifications are segment upload,
-    /// segment download, segment(s) delete, manifest upload, manifest download.
-    /// The notification is generated before the actual use and does not
-    /// affected by errors. The notification is generated even if the operation
-    /// failed. Also, every retry is generating its own notification.
-    ///
-    /// \param filter is a notification filter which allows to narrow the set of
-    ///        posible notificatoins by source and type.
-    /// \return the future which will be available after the next cloud storage
-    ///         API operation.
-    ss::future<api_activity_notification> subscribe(event_filter& filter);
+    materialized_resources& materialized() {
+        return _remote_svc.materialized();
+    }
 
     // If you need to spawn a background task that relies on
     // this object staying alive, spawn it with this gate.
     seastar::gate& gate() { return _gate; };
     ss::abort_source& as() { return _as; }
 
-    remote_probe& get_probe() { return _probe; }
+    ss::future<api_activity_notification> subscribe(event_filter& filter) {
+        return _remote_svc.subscribe(filter);
+    }
 
 private:
-    cloud_io::remote& io() { return _io.local(); }
-    const cloud_io::remote& io() const { return _io.local(); }
-
-    /// Notify all subscribers about segment or manifest upload/download
-    void notify_external_subscribers(
-      api_activity_notification, const retry_chain_node& caller);
-    std::function<void(size_t)>
-    make_notify_cb(api_activity_type t, retry_chain_node& retry);
+    cloud_io::remote& io() { return _io; }
+    const cloud_io::remote& io() const { return _io; }
 
     ss::gate _gate;
     ss::abort_source _as;
 
-    ss::sharded<cloud_io::remote>& _io;
-    std::unique_ptr<materialized_resources> _materialized;
+    cloud_io::remote& _io;
 
-    // Lifetime: probe has reference to _materialized, must be destroyed after
-    remote_probe _probe;
-
-    intrusive_list<event_filter, &event_filter::_hook> _filters;
+    cloud_storage::remote_service& _remote_svc;
 };
 
 } // namespace cloud_storage

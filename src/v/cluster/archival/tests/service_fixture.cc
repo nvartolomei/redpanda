@@ -100,8 +100,14 @@ archiver_fixture::archiver_fixture()
     io.local().start().get();
 
     // Init remote api
-    remote.start(std::ref(io), sharded_cloud_conf).get();
-    remote.local().start().get();
+    remote_svc.start().get();
+    remote_svc.invoke_on_all(&cloud_storage::remote_service::start).get();
+    remote
+      .start(
+        ss::sharded_parameter([this] { return std::ref(remote_svc.local()); }),
+        std::ref(io),
+        sharded_cloud_conf)
+      .get();
 }
 
 archiver_fixture::~archiver_fixture() {
@@ -109,6 +115,7 @@ archiver_fixture::~archiver_fixture() {
     pool.local().shutdown_connections();
     io.local().request_stop();
     remote.stop().get();
+    remote_svc.stop().get();
     io.stop().get();
     pool.stop().get();
 }

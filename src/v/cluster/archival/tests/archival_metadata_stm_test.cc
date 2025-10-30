@@ -9,20 +9,16 @@
 
 #include "cloud_storage/partition_manifest.h"
 #include "cloud_storage/remote.h"
+#include "cloud_storage/remote_service.h"
 #include "cloud_storage/types.h"
 #include "cluster/archival/archival_metadata_stm.h"
-#include "cluster/errc.h"
 #include "http/tests/http_imposter.h"
 #include "model/fundamental.h"
-#include "model/metadata.h"
 #include "model/record.h"
 #include "model/timestamp.h"
-#include "raft/fundamental.h"
 #include "raft/persisted_stm.h"
 #include "raft/state_machine_manager.h"
 #include "raft/tests/simple_raft_fixture.h"
-#include "storage/tests/utils/disk_log_builder.h"
-#include "test_utils/async.h"
 #include "test_utils/boost_fixture.h"
 
 #include <seastar/core/lowres_clock.hh>
@@ -33,7 +29,6 @@
 
 #include <boost/test/tools/old/interface.hpp>
 
-#include <chrono>
 #include <stdexcept>
 
 using namespace std::chrono_literals;
@@ -122,9 +117,14 @@ struct archival_metadata_stm_base_fixture
           .get();
         cloud_io.invoke_on_all([](cloud_io::remote& io) { return io.start(); })
           .get();
-        cloud_api.start(std::ref(cloud_io), std::ref(cloud_cfg)).get();
+        remote_svc.start().get();
+        remote_svc.invoke_on_all(&cloud_storage::remote_service::start).get();
         cloud_api
-          .invoke_on_all([](cloud_storage::remote& api) { return api.start(); })
+          .start(
+            ss::sharded_parameter(
+              [this] { return std::ref(remote_svc.local()); }),
+            std::ref(cloud_io),
+            std::ref(cloud_cfg))
           .get();
     }
 
@@ -133,6 +133,7 @@ struct archival_metadata_stm_base_fixture
         cloud_conn_pool.local().shutdown_connections();
         cloud_io.stop().get();
         cloud_api.stop().get();
+        remote_svc.stop().get();
         cloud_conn_pool.stop().get();
         cloud_cfg.stop().get();
     }
@@ -140,6 +141,7 @@ struct archival_metadata_stm_base_fixture
     ss::sharded<cloud_storage::configuration> cloud_cfg;
     ss::sharded<cloud_storage_clients::client_pool> cloud_conn_pool;
     ss::sharded<cloud_io::remote> cloud_io;
+    ss::sharded<cloud_storage::remote_service> remote_svc;
     ss::sharded<cloud_storage::remote> cloud_api;
 };
 

@@ -477,7 +477,6 @@ redpanda_cc_gtest(
         "//src/v/cloud_storage_clients",
         "//src/v/config",
         "//src/v/model",
-        "//src/v/storage",
         "//src/v/test_utils:gtest",
         "//src/v/utils:lazy_abort_source",
         "//src/v/utils:retry_chain_node",

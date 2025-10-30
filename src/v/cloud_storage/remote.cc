@@ -15,6 +15,7 @@
 #include "cloud_storage/base_manifest.h"
 #include "cloud_storage/logger.h"
 #include "cloud_storage/materialized_resources.h"
+#include "cloud_storage/remote_events.h"
 #include "cloud_storage/types.h"
 #include "cloud_storage_clients/client_pool.h"
 #include "cloud_storage_clients/types.h"
@@ -70,35 +71,32 @@ namespace cloud_storage {
 
 using namespace std::chrono_literals;
 
-remote::remote(
-  ss::sharded<cloud_io::remote>& io,
-  const cloud_storage_clients::client_configuration& conf)
+remote::remote(cloud_storage::remote_service& remote_svc, cloud_io::remote& io)
   : _io(io)
-  , _materialized(std::make_unique<materialized_resources>())
-  , _probe(
-      remote_metrics_disabled(
-        static_cast<bool>(
-          std::visit([](auto&& cfg) { return cfg.disable_metrics; }, conf))),
-      remote_metrics_disabled(
-        static_cast<bool>(std::visit(
-          [](auto&& cfg) { return cfg.disable_public_metrics; }, conf))),
-      *_materialized) {}
+  , _remote_svc(remote_svc) {}
 
-remote::remote(ss::sharded<cloud_io::remote>& io, const configuration& conf)
-  : remote(io, conf.client_config) {}
+remote::remote(
+  cloud_storage::remote_service& remote_svc,
+  ss::sharded<cloud_io::remote>& io,
+  [[maybe_unused]] const cloud_storage_clients::client_configuration& conf)
+  : _io(io.local())
+  , _remote_svc(remote_svc) {}
+
+remote::remote(
+  cloud_storage::remote_service& remote_svc,
+  ss::sharded<cloud_io::remote>& io,
+  const configuration& conf)
+  : remote(remote_svc, io, conf.client_config) {}
 
 remote::~remote() {
     // This is declared in the .cc to avoid header trying to
     // link with destructors for unique_ptr wrapped members
 }
 
-ss::future<> remote::start() { co_await _materialized->start(); }
-
 ss::future<> remote::stop() {
     cst_log.debug("Stopping remote...");
     _as.request_abort();
     auto gate_close = _gate.close();
-    co_await _materialized->stop();
     co_await std::move(gate_close);
     cst_log.debug("Stopped remote...");
 }
@@ -165,9 +163,11 @@ ss::future<download_result> remote::do_download_manifest(
          .parent_rtc = parent,
          // NOTE: appropriate probe is only updated after parsing the manifest.
          .success_cb = std::nullopt,
-         .failure_cb = [this]() { _probe.failed_manifest_download(); },
-         .backoff_cb = [this]() { _probe.manifest_download_backoff(); },
-         .on_req_cb = make_notify_cb(
+         .failure_cb =
+           [this]() { _remote_svc.probe().failed_manifest_download(); },
+         .backoff_cb =
+           [this]() { _remote_svc.probe().manifest_download_backoff(); },
+         .on_req_cb = _remote_svc.make_notify_cb(
            api_activity_type::manifest_download, parent),
        },
        .display_str = "manifest",
@@ -190,22 +190,22 @@ ss::future<download_result> remote::do_download_manifest(
         switch (manifest.get_manifest_type()) {
             using enum manifest_type;
         case partition:
-            _probe.partition_manifest_download();
+            _remote_svc.probe().partition_manifest_download();
             break;
         case topic:
-            _probe.topic_manifest_download();
+            _remote_svc.probe().topic_manifest_download();
             break;
         case tx_range:
-            _probe.txrange_manifest_download();
+            _remote_svc.probe().txrange_manifest_download();
             break;
         case cluster_metadata:
-            _probe.cluster_metadata_manifest_download();
+            _remote_svc.probe().cluster_metadata_manifest_download();
             break;
         case spillover:
-            _probe.spillover_manifest_download();
+            _remote_svc.probe().spillover_manifest_download();
             break;
         case topic_mount:
-            _probe.topic_mount_manifest_download();
+            _remote_svc.probe().topic_mount_manifest_download();
             break;
         }
     }
@@ -224,22 +224,22 @@ ss::future<upload_result> remote::upload_manifest(
         switch (t) {
             using enum manifest_type;
         case partition:
-            _probe.partition_manifest_upload();
+            _remote_svc.probe().partition_manifest_upload();
             break;
         case topic:
-            _probe.topic_manifest_upload();
+            _remote_svc.probe().topic_manifest_upload();
             break;
         case tx_range:
-            _probe.txrange_manifest_upload();
+            _remote_svc.probe().txrange_manifest_upload();
             break;
         case cluster_metadata:
-            _probe.cluster_metadata_manifest_upload();
+            _remote_svc.probe().cluster_metadata_manifest_upload();
             break;
         case spillover:
-            _probe.spillover_manifest_upload();
+            _remote_svc.probe().spillover_manifest_upload();
             break;
         case topic_mount:
-            _probe.topic_mount_manifest_upload();
+            _remote_svc.probe().topic_mount_manifest_upload();
             break;
         }
     };
@@ -249,41 +249,15 @@ ss::future<upload_result> remote::upload_manifest(
         .key = cloud_storage_clients::object_key{key().native()},
         .parent_rtc = parent,
         .success_cb = std::move(success_cb),
-        .failure_cb = [this] { _probe.failed_manifest_upload(); },
-        .backoff_cb = [this] { _probe.manifest_upload_backoff(); },
-        .on_req_cb = make_notify_cb(api_activity_type::manifest_upload, parent),
+        .failure_cb = [this] { _remote_svc.probe().failed_manifest_upload(); },
+        .backoff_cb = [this] { _remote_svc.probe().manifest_upload_backoff(); },
+        .on_req_cb = _remote_svc.make_notify_cb(
+          api_activity_type::manifest_upload, parent),
       },
       .display_str = to_string(upload_type::manifest),
       .payload = std::move(buf),
       .accept_no_content_response = false,
     });
-}
-
-void remote::notify_external_subscribers(
-  api_activity_notification event, const retry_chain_node& caller) {
-    const auto* caller_root = caller.get_root();
-
-    for (auto& flt : _filters) {
-        if (flt._events_to_ignore.contains(event.type)) {
-            continue;
-        }
-
-        if (flt._sources_to_ignore.contains(caller_root)) {
-            continue;
-        }
-
-        // Invariant: the filter._promise is always initialized
-        // by the 'subscribe' method.
-        vassert(
-          flt._promise.has_value(),
-          "Filter object is not initialized properly");
-        flt._promise->set_value(event);
-        flt._promise = std::nullopt;
-        // NOTE: the filter object can be reused by the owner
-    }
-
-    _filters.remove_if(
-      [](const event_filter& f) { return !f._promise.has_value(); });
 }
 
 ss::future<upload_result> remote::upload_controller_snapshot(
@@ -308,13 +282,17 @@ ss::future<upload_result> remote::upload_controller_snapshot(
         .key = cloud_storage_clients::object_key{remote_path()},
         .parent_rtc = parent,
         .success_cb =
-          [this] { _probe.controller_snapshot_successful_upload(); },
+          [this] {
+              _remote_svc.probe().controller_snapshot_successful_upload();
+          },
         // TODO: should use a different metric for controller snapshot size.
         .success_size_cb =
-          [this](size_t sz) { _probe.register_upload_size(sz); },
-        .failure_cb = [this] { _probe.controller_snapshot_failed_upload(); },
-        .backoff_cb = [this] { _probe.controller_snapshot_upload_backoff(); },
-        .on_req_cb = make_notify_cb(
+          [this](size_t sz) { _remote_svc.probe().register_upload_size(sz); },
+        .failure_cb =
+          [this] { _remote_svc.probe().controller_snapshot_failed_upload(); },
+        .backoff_cb =
+          [this] { _remote_svc.probe().controller_snapshot_upload_backoff(); },
+        .on_req_cb = _remote_svc.make_notify_cb(
           api_activity_type::controller_snapshot_upload, parent),
       },
       file_size,
@@ -340,12 +318,12 @@ ss::future<upload_result> remote::upload_segment(
           .bucket = bucket,
           .key = cloud_storage_clients::object_key{segment_path()},
           .parent_rtc = parent,
-          .success_cb = [this] { _probe.successful_upload(); },
+          .success_cb = [this] { _remote_svc.probe().successful_upload(); },
           .success_size_cb =
-            [this](size_t sz) { _probe.register_upload_size(sz); },
-          .failure_cb = [this] { _probe.failed_upload(); },
-          .backoff_cb = [this] { _probe.upload_backoff(); },
-          .on_req_cb = make_notify_cb(
+            [this](size_t sz) { _remote_svc.probe().register_upload_size(sz); },
+          .failure_cb = [this] { _remote_svc.probe().failed_upload(); },
+          .backoff_cb = [this] { _remote_svc.probe().upload_backoff(); },
+          .on_req_cb = _remote_svc.make_notify_cb(
             api_activity_type::segment_upload, parent),
         },
         content_length,
@@ -370,9 +348,10 @@ ss::future<upload_result> remote::upload_index(
           .bucket = bucket,
           .key = key,
           .parent_rtc = parent,
-          .success_cb = [this] { _probe.index_upload(); },
-          .failure_cb = [this] { _probe.failed_index_upload(); },
-          .on_req_cb = make_notify_cb(api_activity_type::object_upload, parent),
+          .success_cb = [this] { _remote_svc.probe().index_upload(); },
+          .failure_cb = [this] { _remote_svc.probe().failed_index_upload(); },
+          .on_req_cb = _remote_svc.make_notify_cb(
+            api_activity_type::object_upload, parent),
         },
         .display_str = to_string(upload_type::segment_index),
         .payload = std::move(buf),
@@ -401,14 +380,15 @@ ss::future<download_result> remote::download_stream(
         .bucket = bucket,
         .key = cloud_storage_clients::object_key{path()},
         .parent_rtc = parent,
-        .success_cb = [this] { _probe.successful_download(); },
+        .success_cb = [this] { _remote_svc.probe().successful_download(); },
         .success_size_cb =
-          [this](size_t sz) { _probe.register_download_size(sz); },
+          [this](size_t sz) { _remote_svc.probe().register_download_size(sz); },
         .failure_cb = [&metrics] { metrics.failed_download_metric(); },
         .backoff_cb = [&metrics] { metrics.download_backoff_metric(); },
-        .client_acquire_cb = [this] { _probe.client_acquisition(); },
+        .client_acquire_cb =
+          [this] { _remote_svc.probe().client_acquisition(); },
         // TODO: pass type in as an argument.
-        .on_req_cb = make_notify_cb(
+        .on_req_cb = _remote_svc.make_notify_cb(
           api_activity_type::segment_download, parent),
         .measure_latency_cb =
           [&metrics] { return metrics.download_latency_measurement(); },
@@ -418,7 +398,7 @@ ss::future<download_result> remote::download_stream(
       false,
       byte_range,
       [this](size_t ms) {
-          _materialized->get_read_path_probe().download_throttled(ms);
+          materialized().get_read_path_probe().download_throttled(ms);
       });
 }
 
@@ -436,22 +416,26 @@ ss::future<download_result> remote::download_segment(
           .bucket = bucket,
           .key = cloud_storage_clients::object_key{segment_path()},
           .parent_rtc = parent,
-          .success_cb = [this] { _probe.successful_download(); },
+          .success_cb = [this] { _remote_svc.probe().successful_download(); },
           .success_size_cb =
-            [this](size_t sz) { _probe.register_download_size(sz); },
-          .failure_cb = [this] { _probe.failed_download(); },
-          .backoff_cb = [this] { _probe.download_backoff(); },
-          .client_acquire_cb = [this] { _probe.client_acquisition(); },
-          .on_req_cb = make_notify_cb(
+            [this](size_t sz) {
+                _remote_svc.probe().register_download_size(sz);
+            },
+          .failure_cb = [this] { _remote_svc.probe().failed_download(); },
+          .backoff_cb = [this] { _remote_svc.probe().download_backoff(); },
+          .client_acquire_cb =
+            [this] { _remote_svc.probe().client_acquisition(); },
+          .on_req_cb = _remote_svc.make_notify_cb(
             api_activity_type::segment_download, parent),
-          .measure_latency_cb = [this] { return _probe.segment_download(); },
+          .measure_latency_cb =
+            [this] { return _remote_svc.probe().segment_download(); },
         },
         cons_str,
         "segment",
         false,
         byte_range,
         [this](size_t ms) {
-            _materialized->get_read_path_probe().download_throttled(ms);
+            materialized().get_read_path_probe().download_throttled(ms);
         })
       .then([h = std::move(holder)](download_result r) { return r; });
 }
@@ -469,10 +453,11 @@ ss::future<download_result> remote::download_index(
          .bucket = bucket,
          .key = cloud_storage_clients::object_key{index_path},
          .parent_rtc = parent,
-         .success_cb = [this]() { _probe.index_download(); },
-         .failure_cb = [this]() { _probe.failed_index_download(); },
-         .backoff_cb = [this]() { _probe.download_backoff(); },
-         .on_req_cb = make_notify_cb(
+         .success_cb = [this]() { _remote_svc.probe().index_download(); },
+         .failure_cb =
+           [this]() { _remote_svc.probe().failed_index_download(); },
+         .backoff_cb = [this]() { _remote_svc.probe().download_backoff(); },
+         .on_req_cb = _remote_svc.make_notify_cb(
            api_activity_type::object_download, parent),
        },
        .display_str = to_string(download_type::segment_index),
@@ -489,7 +474,7 @@ remote::download_object(download_request download_request) {
     auto holder = _gate.hold();
     auto details = std::move(download_request.transfer_details);
     if (!details.on_req_cb.has_value()) {
-        details.on_req_cb = make_notify_cb(
+        details.on_req_cb = _remote_svc.make_notify_cb(
           api_activity_type::object_download, details.parent_rtc);
     }
     return io()
@@ -536,7 +521,8 @@ ss::future<upload_result> remote::delete_object(
         .bucket = bucket,
         .key = path,
         .parent_rtc = parent,
-        .on_req_cb = make_notify_cb(api_activity_type::segment_delete, parent),
+        .on_req_cb = _remote_svc.make_notify_cb(
+          api_activity_type::segment_delete, parent),
       })
       .then([h = std::move(holder)](upload_result r) { return r; });
 }
@@ -557,7 +543,7 @@ ss::future<upload_result> remote::delete_objects(
         bucket,
         std::move(keys),
         parent,
-        make_notify_cb(api_activity_type::segment_delete, parent))
+        _remote_svc.make_notify_cb(api_activity_type::segment_delete, parent))
       .then([h = std::move(holder)](upload_result r) { return r; });
 }
 
@@ -600,7 +586,7 @@ ss::future<upload_result> remote::upload_object(upload_request req) {
     auto holder = _gate.hold();
     auto details = std::move(req.transfer_details);
     if (!details.on_req_cb.has_value()) {
-        details.on_req_cb = make_notify_cb(
+        details.on_req_cb = _remote_svc.make_notify_cb(
           api_activity_type::object_upload, details.parent_rtc);
     }
     return io()
@@ -611,27 +597,6 @@ ss::future<upload_result> remote::upload_object(upload_request req) {
         .accept_no_content_response = false,
       })
       .then([h = std::move(holder)](upload_result r) { return r; });
-}
-
-ss::future<api_activity_notification>
-remote::subscribe(remote::event_filter& filter) {
-    _as.check();
-    auto holder = _gate.hold();
-    vassert(filter._hook.is_linked() == false, "Filter is already in use");
-    _filters.push_back(filter);
-    filter._promise.emplace();
-    return filter._promise->get_future().then(
-      [h = std::move(holder)](api_activity_notification r) { return r; });
-    ;
-}
-
-std::function<void(size_t)>
-remote::make_notify_cb(api_activity_type t, retry_chain_node& retry) {
-    return [this, t, &retry](size_t attempt_num) {
-        notify_external_subscribers(
-          api_activity_notification{.type = t, .is_retry = attempt_num > 1},
-          retry);
-    };
 }
 
 } // namespace cloud_storage

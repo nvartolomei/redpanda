@@ -58,7 +58,7 @@ public:
     /// of the remote_partition.
     remote_partition(
       ss::shared_ptr<async_manifest_view> m,
-      remote& api,
+      ss::lw_shared_ptr<remote> remote,
       cloud_io::cache& c,
       cloud_storage_clients::bucket_name bucket,
       partition_probe& probe);
@@ -213,7 +213,7 @@ private:
     retry_chain_logger _ctxlog;
     ss::gate _gate;
     ss::abort_source _as;
-    remote& _api;
+    ss::lw_shared_ptr<remote> _remote;
     cloud_io::cache& _cache;
     ss::shared_ptr<async_manifest_view> _manifest_view;
     cloud_storage_clients::bucket_name _bucket;
