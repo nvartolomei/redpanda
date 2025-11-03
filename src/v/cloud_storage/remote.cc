@@ -89,6 +89,7 @@ remote::remote(
   : remote(remote_svc, io, conf.client_config) {}
 
 remote::~remote() {
+    vassert(_gate.is_closed(), "remote gate is not closed");
     // This is declared in the .cc to avoid header trying to
     // link with destructors for unique_ptr wrapped members
 }
