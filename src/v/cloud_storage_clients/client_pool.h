@@ -162,10 +162,12 @@ public:
       ss::lowres_clock::duration deadline,
       std::optional<ss::sstring> ctx = std::nullopt);
 
-    /// \brief Get number of connections
-    size_t size() const noexcept;
+    /// \brief Idle client connections count. Does not include connections
+    /// allowed to be borrowed from other shards.
+    size_t idle_count() const noexcept;
 
-    size_t max_size() const noexcept;
+    /// \brief Configured capacity of the pool.
+    size_t capacity() const noexcept;
 
     bool has_background_operations() const noexcept {
         return _bg_gate.get_count() > 0;
