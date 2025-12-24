@@ -663,6 +663,21 @@ redpanda_cc_library(
 )
 
 redpanda_cc_library(
+    name = "backoff_state",
+    srcs = [
+        "backoff_state.cc",
+    ],
+    hdrs = [
+        "backoff_state.h",
+    ],
+    deps = [
+        "//src/v/context",
+        "//src/v/ssx:context_sleep",
+        "@seastar",
+    ],
+)
+
+redpanda_cc_library(
     name = "execution_monitor",
     hdrs = [
         "execution_monitor.h",

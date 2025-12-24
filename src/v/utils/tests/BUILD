@@ -602,3 +602,16 @@ redpanda_cc_gtest(
         "@seastar",
     ],
 )
+
+redpanda_cc_gtest(
+    name = "backoff_state_test",
+    timeout = "short",
+    srcs = ["backoff_state_test.cc"],
+    deps = [
+        "//src/v/context:context_frame",
+        "//src/v/test_utils:gtest",
+        "//src/v/utils:backoff_state",
+        "@googletest//:gtest",
+        "@seastar",
+    ],
+)
