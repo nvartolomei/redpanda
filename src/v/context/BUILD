@@ -16,15 +16,19 @@ redpanda_cc_library(
 
 redpanda_cc_library(
     name = "context_frame",
+    srcs = ["tracing.cc"],
     hdrs = [
         "abort_source.h",
         "context_frame.h",
         "deadline_timer.h",
         "linker.h",
+        "tracing.h",
     ],
     visibility = ["//visibility:public"],
     deps = [
         ":context",
+        "@abseil-cpp//absl/container:inlined_vector",
+        "@fmt",
         "@seastar",
     ],
 )

@@ -90,10 +90,22 @@ inline constexpr bool construct_mixin_nothrow_v = [] {
     }
 }();
 
+/// Check if on_context_cancel is noexcept for a mixin (when it exists).
+template<typename Frame, typename Mixin>
+inline constexpr bool on_context_cancel_nothrow_v = [] {
+    if constexpr (requires(Frame& f, cancel_cause c) {
+                      f.Mixin::on_context_cancel(c);
+                  }) {
+        return noexcept(
+          std::declval<Frame&>().Mixin::on_context_cancel(cancel_cause{}));
+    }
+    return true; // No hook = trivially noexcept
+}();
+
 /// Construct mixin: use matching constructor if available, else default.
+/// \note noexcept enforced via static_assert in context_frame constructors.
 template<typename Mixin, typename ArgsTuple>
-constexpr Mixin construct_mixin(ArgsTuple&& args) noexcept(
-  construct_mixin_nothrow_v<Mixin, ArgsTuple>) {
+constexpr Mixin construct_mixin(ArgsTuple&& args) noexcept {
     if constexpr (constructible_from_tuple_v<Mixin, std::decay_t<ArgsTuple>>) {
         return std::make_from_tuple<Mixin>(std::forward<ArgsTuple>(args));
     } else {
@@ -129,16 +141,21 @@ class context_frame final
   , public Mixins... {
 public:
     /// Construct with parent only (default-init all mixins).
-    explicit context_frame(context_ref parent) noexcept(
-      ((std::is_nothrow_default_constructible_v<Mixins>
-        && init_mixin_nothrow<Mixins, std::tuple<>>())
-       && ...))
+    explicit context_frame(context_ref parent) noexcept
       : detail::basic_context_frame(parent)
       , Mixins()... {
+        static_assert(
+          (std::is_nothrow_default_constructible_v<Mixins> && ...),
+          "Without init args, all mixin constructors must be noexcept");
+        static_assert(
+          (init_mixin_nothrow<Mixins, std::tuple<>>() && ...),
+          "All mixin on_context_init() hooks must be noexcept");
+
+        register_cancel_callback();
         (init_mixin<Mixins>(std::tuple<>{}), ...);
 
-        if (this->is_cancelled()) {
-            on_context_cancel(this->cancel_cause());
+        if (this->is_cancelled()) [[unlikely]] {
+            invoke_cancel_callback(this->cancel_cause());
         }
     }
 
@@ -149,25 +166,33 @@ public:
     requires(sizeof...(Inits) > 0
              && (detail::targets_one_of_v<Inits, Mixins...> && ...)
              && ((detail::wrapper_count_v<Mixins, Inits...> <= 1) && ...))
-    explicit context_frame(context_ref parent, Inits&&... inits) noexcept(
-      ((detail::construct_mixin_nothrow_v<
-          Mixins,
-          decltype(detail::extract_init_args<Mixins>(std::declval<Inits>()...))>
-        && init_mixin_nothrow<
-          Mixins,
-          decltype(detail::extract_init_args<Mixins>(
-            std::declval<Inits>()...))>())
-       && ...))
+    explicit context_frame(context_ref parent, Inits&&... inits) noexcept
       : detail::basic_context_frame(parent)
       , Mixins(
           detail::construct_mixin<Mixins>(detail::extract_init_args<Mixins>(
             std::forward<Inits>(inits)...)))... {
+        static_assert(
+          (detail::construct_mixin_nothrow_v<
+             Mixins,
+             decltype(detail::extract_init_args<Mixins>(
+               std::declval<Inits>()...))>
+           && ...),
+          "All mixin constructors must be noexcept");
+        static_assert(
+          (init_mixin_nothrow<
+             Mixins,
+             decltype(detail::extract_init_args<Mixins>(
+               std::declval<Inits>()...))>()
+           && ...),
+          "All mixin on_context_init() hooks must be noexcept");
+
+        register_cancel_callback();
         (init_mixin<Mixins>(
            detail::extract_init_args<Mixins>(std::forward<Inits>(inits)...)),
          ...);
 
-        if (this->is_cancelled()) {
-            on_context_cancel(this->cancel_cause());
+        if (this->is_cancelled()) [[unlikely]] {
+            invoke_cancel_callback(this->cancel_cause());
         }
     }
 
@@ -202,9 +227,9 @@ private:
     }
 
     /// Call on_context_init hook for a mixin based on its init args.
+    /// \note noexcept enforced via static_assert in constructors.
     template<typename Mixin, typename ArgsTuple>
-    void init_mixin(ArgsTuple&& args) noexcept(
-      init_mixin_nothrow<Mixin, ArgsTuple>()) {
+    void init_mixin(ArgsTuple&& args) noexcept {
         using Args = std::decay_t<ArgsTuple>;
         if constexpr (std::tuple_size_v<Args> > 0) {
             // Has args: call on_context_init(args...) only if no matching ctor
@@ -224,11 +249,25 @@ private:
         }
     }
 
-protected:
-    void on_context_cancel(const context::cancel_cause cause) noexcept final {
+private:
+    /// Check if any mixin has a cancel hook.
+    static constexpr bool has_any_cancel_hook_v
+      = (requires(Mixins& m, context::cancel_cause c) {
+            m.on_context_cancel(c);
+        } || ...);
+
+    /// Static thunk for cancel callback. Casts base pointer and dispatches
+    /// to mixin hooks.
+    static void cancel_thunk(
+      detail::basic_context_frame* base, context::cancel_cause cause) noexcept {
+        static_assert(
+          (detail::on_context_cancel_nothrow_v<context_frame, Mixins> && ...),
+          "All mixin on_context_cancel() hooks must be noexcept");
+
+        auto* self = static_cast<context_frame*>(base);
         (..., [&] {
             constexpr bool has_hook = requires {
-                this->Mixins::on_context_cancel(cause);
+                self->Mixins::on_context_cancel(cause);
             };
             constexpr bool expects_hook = requires {
                 typename Mixins::cancellable;
@@ -244,9 +283,23 @@ protected:
               "'on_context_cancel' is missing or private/unfriendly!");
 
             if constexpr (has_hook) {
-                this->Mixins::on_context_cancel(cause);
+                self->Mixins::on_context_cancel(cause);
             }
         }());
+    }
+
+    /// Register cancel callback if any mixin has a hook.
+    void register_cancel_callback() noexcept {
+        if constexpr (has_any_cancel_hook_v) {
+            this->set_cancel_callback(&cancel_thunk);
+        }
+    }
+
+    /// Invoke cancel callback directly (for already-cancelled parent case).
+    void invoke_cancel_callback(context::cancel_cause cause) noexcept {
+        if constexpr (has_any_cancel_hook_v) {
+            cancel_thunk(this, cause);
+        }
     }
 };
 

@@ -31,10 +31,14 @@ class linker {
     struct bridge_frame final : detail::basic_context_frame {
         bridge_frame(context_ref parent, context::cancel_handle target)
           : basic_context_frame(parent)
-          , target_(target) {}
+          , target_(target) {
+            set_cancel_callback(&cancel_thunk);
+        }
 
-        void on_context_cancel(context::cancel_cause cause) noexcept override {
-            target_.trigger(cause);
+        static void cancel_thunk(
+          detail::basic_context_frame* base,
+          context::cancel_cause cause) noexcept {
+            static_cast<bridge_frame*>(base)->target_.trigger(cause);
         }
 
         context::cancel_handle target_;
@@ -48,7 +52,7 @@ private:
     requires(
       sizeof...(Refs) > 0
       && (std::same_as<std::decay_t<Refs>, context_ref> && ...))
-    void on_context_init(this Self& self, Refs... extras) {
+    void on_context_init(this Self& self, Refs... extras) noexcept {
         auto handle = self.cancel_handle();
         (
           [&] {

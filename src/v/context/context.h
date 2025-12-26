@@ -82,6 +82,8 @@ class context_ref;
 namespace context {
 class deadline_timer;
 class linker;
+class tracing_span;
+struct tracing_span_data;
 namespace detail {
 class basic_context_frame;
 } // namespace detail
@@ -159,6 +161,7 @@ class basic_context_frame {
     friend class ::context_ref;
     friend class context::deadline_timer;
     friend class context::linker;
+    friend class context::tracing_span;
     friend class background_context_frame;
 #ifdef CONTEXT_DEBUG_REF_COUNTING
     friend class context::cancel_handle;
@@ -219,9 +222,32 @@ public:
         propagate_cancel_to_children();
     }
 
-    /// \brief Override to handle cancellation.
+    /// Function pointer type for cancel callbacks.
     /// \note Invocation order across frames is unspecified.
-    virtual void on_context_cancel(const context::cancel_cause) noexcept {}
+    using cancel_callback_t
+      = void (*)(basic_context_frame*, context::cancel_cause) noexcept;
+
+    /// \brief Sets the cancel callback for this frame.
+    /// Called by context_frame during construction if any mixin has a cancel
+    /// hook.
+    void set_cancel_callback(cancel_callback_t cb) noexcept {
+        on_cancel_fn_ = cb;
+    }
+
+    /// \brief Returns nearest ancestor's span data, or nullptr if none.
+    /// Cached for O(1) access. Updated by context_frame when span mixin
+    /// present.
+    [[nodiscard]] const context::tracing_span_data*
+    trace_span() const noexcept {
+        return cached_trace_span_;
+    }
+
+    /// \brief Updates the cached trace span pointer.
+    /// Called by context_frame when a tracing_span mixin is initialized.
+    void
+    set_cached_trace_span(const context::tracing_span_data* span) noexcept {
+        cached_trace_span_ = span;
+    }
 
 protected:
     explicit basic_context_frame(context_ref parent) noexcept;
@@ -239,15 +265,15 @@ protected:
 #endif
 
         // Update parent's child pointer if we're the head
-        if (parent_ && parent_->child_ == this) [[likely]] {
+        if (parent_ && parent_->child_ == this) {
             parent_->child_ = next_sibling_;
         }
 
         // Unlink from sibling list
-        if (prev_sibling_) [[likely]] {
+        if (prev_sibling_) {
             prev_sibling_->next_sibling_ = next_sibling_;
         }
-        if (next_sibling_) [[likely]] {
+        if (next_sibling_) {
             next_sibling_->prev_sibling_ = prev_sibling_;
         }
     }
@@ -264,7 +290,9 @@ private:
             return false;
         }
         cancel_cause_ = cause;
-        on_context_cancel(cause);
+        if (on_cancel_fn_) {
+            on_cancel_fn_(this, cause);
+        }
         return true;
     }
 
@@ -305,6 +333,8 @@ private:
     basic_context_frame* child_{nullptr};
 
     context::time_point deadline_{context::no_deadline};
+    const context::tracing_span_data* cached_trace_span_{nullptr};
+    cancel_callback_t on_cancel_fn_{nullptr};
 
 #ifdef CONTEXT_DEBUG_REF_COUNTING
     ssize_t live_refs_{0};
@@ -415,6 +445,12 @@ public:
         return frame_->time_left();
     }
 
+    /// \brief Returns the nearest ancestor's span data, or nullptr if none.
+    [[nodiscard]] const context::tracing_span_data*
+    trace_span() const noexcept {
+        return frame_->trace_span();
+    }
+
 private:
     context::detail::basic_context_frame* frame_;
     expression_in_debug_mode(oncore _verify_shard);
@@ -433,12 +469,13 @@ inline detail::basic_context_frame::basic_context_frame(
   context_ref parent) noexcept
   : parent_(parent.frame_)
   , deadline_(parent_->deadline_)
+  , cached_trace_span_(parent_->cached_trace_span_)
   , cancel_cause_(parent_->cancel_cause_) {
     // Prepend to parent's child list
     auto* old_child = parent_->child_;
     next_sibling_ = old_child;
     parent_->child_ = this;
-    if (old_child) [[likely]] {
+    if (old_child) {
         old_child->prev_sibling_ = this;
     }
 }
@@ -498,17 +535,20 @@ inline void cancel_handle::trigger(cancel_cause cause) noexcept {
 }
 
 inline system_clock::time_point wall_deadline(const context_ref ctx) noexcept {
-    auto internal_tp = ctx.deadline();
+    auto internal_deadline = ctx.deadline();
 
-    if (internal_tp == context::no_deadline) {
+    if (internal_deadline == context::no_deadline) {
         return system_clock::time_point::max();
     }
 
-    auto sys_tp = lowres_system_clock::now() + ctx.time_left();
-    auto ts = std::chrono::duration_cast<system_clock::duration>(
-      sys_tp.time_since_epoch());
+    // Compute remaining time directly, avoiding time_left()'s redundant
+    // no_deadline check and max() clamp (expired deadlines yield past times).
+    auto remaining = internal_deadline - clock::now();
+    auto sys_tp = lowres_system_clock::now() + remaining;
 
-    return system_clock::time_point{ts};
+    return system_clock::time_point{
+      std::chrono::duration_cast<system_clock::duration>(
+        sys_tp.time_since_epoch())};
 }
 
 } // namespace context
