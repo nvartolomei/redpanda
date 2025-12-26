@@ -8,6 +8,7 @@
 // by the Apache License, Version 2.0
 
 #include "context/context.h"
+#include "context/context_frame.h"
 
 #include <gtest/gtest.h>
 

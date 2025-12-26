@@ -28,10 +28,10 @@
 ///
 /// ## Lifetime
 ///
-/// \warning **Strict LIFO discipline required.**
-/// Children MUST be destroyed before parents and references MUST NOT outlive
-/// frames. This enables zero-cost operation (no heap allocation or reference
-/// counting), validated by assertions in debug builds.
+/// \warning Children MUST be destroyed before their parent (strict LIFO), and
+/// references (`context_ref`, `cancel_handle`) MUST NOT outlive frames.
+/// Siblings, however, may be destroyed in any order—concurrent operations
+/// (e.g., parallel requests) complete independently.
 ///
 /// \note **Shard-local:** Contexts strictly belong to a single shard and MUST
 /// NOT be sent between shards.
@@ -76,12 +76,15 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <string_view>
 
 class context_ref;
 
 namespace context {
 class deadline_timer;
 class linker;
+class tracing_span;
+class tracing_span_data;
 namespace detail {
 class basic_context_frame;
 } // namespace detail
@@ -138,7 +141,11 @@ private:
 context_ref background() noexcept;
 
 /// \brief A placeholder context_ref to use where a real context is not yet
-/// available. May be used only for temporary stubbing during development.
+/// available. Deprecated: do not use in production; pass context_ref through
+/// your API instead of calling todo().
+/// \deprecated todo() is for temporary stubs only. For production, propagate
+/// context_ref through your API to preserve cancellation, deadlines, and
+/// tracing.
 context_ref todo() noexcept;
 
 /// \brief Estimates the Wall Clock deadline for crossing system boundaries.
@@ -159,6 +166,7 @@ class basic_context_frame {
     friend class ::context_ref;
     friend class context::deadline_timer;
     friend class context::linker;
+    friend class context::tracing_span;
     friend class background_context_frame;
 #ifdef CONTEXT_DEBUG_REF_COUNTING
     friend class context::cancel_handle;
@@ -183,6 +191,27 @@ public:
     /// \brief Returns the cancellation cause.
     [[nodiscard]] context::cancel_cause cancel_cause() const noexcept {
         return cancel_cause_;
+    }
+
+    /// \brief Iterates over direct children of this frame.
+    /// \param fn Callback invoked for each child frame.
+    template<typename Fn>
+    void for_each_child(Fn&& fn) const {
+        for (auto* c = child_; c != nullptr; c = c->next_sibling_) {
+            fn(*c);
+        }
+    }
+
+    /// \brief Returns true if this frame has links to other contexts.
+    /// Used to detect linker frames for tree dumping.
+    [[nodiscard]] virtual bool has_links() const noexcept { return false; }
+
+    /// \brief Returns the source context if this is a bridge frame.
+    /// Bridge frames are internal helpers created by the linker mixin.
+    /// Returns nullptr for regular frames.
+    [[nodiscard]] virtual const basic_context_frame*
+    linked_source() const noexcept {
+        return nullptr;
     }
 
     /// \brief Returns the absolute deadline time point.
@@ -219,12 +248,29 @@ public:
         propagate_cancel_to_children();
     }
 
-    /// \brief Override to handle cancellation.
-    /// \note Invocation order across frames is unspecified.
-    virtual void on_context_cancel(const context::cancel_cause) noexcept {}
+    /// \brief Returns nearest ancestor's span data, or nullptr if none.
+    /// Cached for O(1) access. Updated by context_frame when span mixin
+    /// present.
+    [[nodiscard]] const context::tracing_span_data*
+    trace_span() const noexcept {
+        return cached_trace_span_;
+    }
+
+    /// \brief Updates the cached trace span pointer.
+    /// Called by context_frame when a tracing_span mixin is initialized.
+    void
+    set_cached_trace_span(const context::tracing_span_data* span) noexcept {
+        cached_trace_span_ = span;
+    }
 
 protected:
     explicit basic_context_frame(context_ref parent) noexcept;
+
+    /// \brief Extracts the frame pointer from a context_ref.
+    /// Available to derived classes since basic_context_frame is a friend of
+    /// context_ref but friend access is not inherited.
+    static basic_context_frame* get_frame(context_ref ref) noexcept;
+
     ~basic_context_frame() noexcept {
         vassert(
           child_ == nullptr,
@@ -239,15 +285,15 @@ protected:
 #endif
 
         // Update parent's child pointer if we're the head
-        if (parent_ && parent_->child_ == this) [[likely]] {
+        if (parent_ && parent_->child_ == this) {
             parent_->child_ = next_sibling_;
         }
 
         // Unlink from sibling list
-        if (prev_sibling_) [[likely]] {
+        if (prev_sibling_) {
             prev_sibling_->next_sibling_ = next_sibling_;
         }
-        if (next_sibling_) [[likely]] {
+        if (next_sibling_) {
             next_sibling_->prev_sibling_ = prev_sibling_;
         }
     }
@@ -255,6 +301,11 @@ protected:
 private:
     explicit basic_context_frame(background_ctor_tag) noexcept
       : parent_{nullptr} {}
+
+    /// \brief Called when this frame is cancelled.
+    /// Override in derived classes to handle cancellation.
+    /// \note Called at most once per frame.
+    virtual void on_context_cancel(context::cancel_cause) noexcept {}
 
     // Cause is already validated not to be not_cancelled.
     [[nodiscard]] bool
@@ -268,36 +319,7 @@ private:
         return true;
     }
 
-    void propagate_cancel_to_children() noexcept {
-        basic_context_frame* curr = child_;
-        while (curr) {
-            bool did_cancel = curr->do_cancel_this_frame(cancel_cause_);
-
-            // 1. Dive deeper (Depth First)
-            if (curr->child_ && did_cancel) {
-                curr = curr->child_;
-                continue;
-            }
-
-            // 2. Visit siblings or ascend
-            while (curr) {
-                // If we have a sibling, visit it
-                if (curr->next_sibling_) {
-                    curr = curr->next_sibling_;
-                    break;
-                }
-
-                // No sibling, ascend to parent
-                curr = curr->parent_;
-
-                // If we returned to 'this' (the frame being cancelled), we are
-                // done
-                if (curr == this) {
-                    return;
-                }
-            }
-        }
-    }
+    void propagate_cancel_to_children() noexcept;
 
     basic_context_frame* parent_;
     basic_context_frame* prev_sibling_{nullptr};
@@ -305,6 +327,7 @@ private:
     basic_context_frame* child_{nullptr};
 
     context::time_point deadline_{context::no_deadline};
+    const context::tracing_span_data* cached_trace_span_{nullptr};
 
 #ifdef CONTEXT_DEBUG_REF_COUNTING
     ssize_t live_refs_{0};
@@ -415,6 +438,18 @@ public:
         return frame_->time_left();
     }
 
+    /// \brief Returns the nearest ancestor's span data, or nullptr if none.
+    [[nodiscard]] const context::tracing_span_data*
+    trace_span() const noexcept {
+        return frame_->trace_span();
+    }
+
+    /// \brief Iterates over direct children of this frame.
+    template<typename Fn>
+    void for_each_child(Fn&& fn) const {
+        frame_->for_each_child(std::forward<Fn>(fn));
+    }
+
 private:
     context::detail::basic_context_frame* frame_;
     expression_in_debug_mode(oncore _verify_shard);
@@ -433,14 +468,20 @@ inline detail::basic_context_frame::basic_context_frame(
   context_ref parent) noexcept
   : parent_(parent.frame_)
   , deadline_(parent_->deadline_)
+  , cached_trace_span_(parent_->cached_trace_span_)
   , cancel_cause_(parent_->cancel_cause_) {
     // Prepend to parent's child list
     auto* old_child = parent_->child_;
     next_sibling_ = old_child;
     parent_->child_ = this;
-    if (old_child) [[likely]] {
+    if (old_child) {
         old_child->prev_sibling_ = this;
     }
+}
+
+inline detail::basic_context_frame*
+detail::basic_context_frame::get_frame(context_ref ref) noexcept {
+    return ref.frame_;
 }
 
 inline cancel_handle::cancel_handle(detail::basic_context_frame& frame) noexcept
@@ -497,18 +538,6 @@ inline void cancel_handle::trigger(cancel_cause cause) noexcept {
     frame_->trigger_cancel(cause);
 }
 
-inline system_clock::time_point wall_deadline(const context_ref ctx) noexcept {
-    auto internal_tp = ctx.deadline();
-
-    if (internal_tp == context::no_deadline) {
-        return system_clock::time_point::max();
-    }
-
-    auto sys_tp = lowres_system_clock::now() + ctx.time_left();
-    auto ts = std::chrono::duration_cast<system_clock::duration>(
-      sys_tp.time_since_epoch());
-
-    return system_clock::time_point{ts};
-}
+system_clock::time_point wall_deadline(const context_ref ctx) noexcept;
 
 } // namespace context

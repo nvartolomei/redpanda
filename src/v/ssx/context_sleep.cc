@@ -17,17 +17,20 @@
 
 namespace ssx {
 
-namespace detail {
+namespace {
 
 template<typename Clock>
 struct sleeper_frame final : context::detail::basic_context_frame {
     seastar::timer<Clock> timer;
     seastar::promise<> done;
 
-    sleeper_frame(context_ref ctx, typename Clock::duration dur)
+    sleeper_frame(context_ref ctx, typename Clock::duration dur) noexcept
       : basic_context_frame(ctx)
       , timer([this] { done.set_value(); }) {
         timer.arm(dur);
+        if (is_cancelled()) [[unlikely]] {
+            on_context_cancel(cancel_cause());
+        }
     }
 
     void on_context_cancel(context::cancel_cause cause) noexcept override {
@@ -37,22 +40,11 @@ struct sleeper_frame final : context::detail::basic_context_frame {
     }
 };
 
-} // namespace detail
+} // namespace
 
 template<typename Clock>
 seastar::future<> sleep(context_ref ctx, typename Clock::duration dur) {
-    // Fast path: already cancelled
-    if (ctx.is_cancelled()) {
-        return seastar::make_exception_future<>(
-          context_sleep_aborted{ctx.cancel_cause()});
-    }
-
-    // Fast path: zero or negative duration
-    if (dur <= Clock::duration::zero()) {
-        return seastar::make_ready_future<>();
-    }
-
-    auto s = std::make_unique<detail::sleeper_frame<Clock>>(ctx, dur);
+    auto s = std::make_unique<sleeper_frame<Clock>>(ctx, dur);
     auto fut = s->done.get_future();
     return fut.finally([s = std::move(s)] {});
 }

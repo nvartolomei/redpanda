@@ -8,6 +8,7 @@ redpanda_cc_gtest(
     ],
     deps = [
         "//src/v/context",
+        "//src/v/context:context_frame",
         "//src/v/test_utils:gtest",
         "@googletest//:gtest",
     ],
@@ -70,6 +71,20 @@ redpanda_cc_gtest(
     ],
 )
 
+redpanda_cc_gtest(
+    name = "tracing_test",
+    timeout = "short",
+    srcs = [
+        "tracing_test.cc",
+    ],
+    deps = [
+        "//src/v/context:context_frame",
+        "//src/v/test_utils:gtest",
+        "@googletest//:gtest",
+        "@seastar",
+    ],
+)
+
 redpanda_cc_bench(
     name = "context_rpbench",
     timeout = "short",
@@ -79,6 +94,21 @@ redpanda_cc_bench(
     deps = [
         "//src/v/context",
         "//src/v/context:context_frame",
+        "@seastar",
+        "@seastar//:benchmark",
+    ],
+)
+
+redpanda_cc_bench(
+    name = "tracing_rpbench",
+    timeout = "short",
+    srcs = [
+        "tracing_bench.cc",
+    ],
+    deps = [
+        "//src/v/context",
+        "//src/v/context:context_frame",
+        "//src/v/utils:retry_chain_node",
         "@seastar",
         "@seastar//:benchmark",
     ],

@@ -20,6 +20,7 @@
 namespace {
 
 using namespace std::chrono_literals;
+using namespace std::string_view_literals;
 
 struct context_counter_mixin {
     void on_context_cancel(const context::cancel_cause) noexcept {
@@ -61,7 +62,7 @@ struct ctor_based_mixin {
     int value1{0};
     std::string_view value2{};
 
-    ctor_based_mixin() = default;
+    ctor_based_mixin() noexcept = default;
     ctor_based_mixin(int v1, std::string_view v2) noexcept
       : value1(v1)
       , value2(v2) {}
@@ -75,9 +76,9 @@ TEST(ContextFrameTest, ContextSizes) {
     };
 
 #ifdef NDEBUG
-    constexpr size_t empty_frame_size = 64;
+    constexpr size_t empty_frame_size = 72;
 #else
-    constexpr size_t empty_frame_size = 64;
+    constexpr size_t empty_frame_size = 72;
 #endif
 
     static_assert(sizeof(context::context_frame<>) == empty_frame_size);
@@ -197,9 +198,13 @@ TEST(ContextFrameTest, CancelPropagationNoOverride) {
 
     struct child_frame final : public context::detail::basic_context_frame {
         explicit child_frame(context_ref parent)
-          : context::detail::basic_context_frame(parent) {}
+          : context::detail::basic_context_frame(parent) {
+            if (is_cancelled()) [[unlikely]] {
+                on_context_cancel(cancel_cause());
+            }
+        }
 
-        void on_context_cancel(const context::cancel_cause) noexcept override {
+        void on_context_cancel(context::cancel_cause) noexcept override {
             ++on_cancel_called;
         }
 
@@ -507,8 +512,8 @@ TEST(ContextFrameTest, HasDeadline) {
 TEST(MixinWithTest, MultipleMixinsWith) {
     struct mixin_a {
         int val{0};
-        mixin_a() = default;
-        explicit mixin_a(int v)
+        mixin_a() noexcept = default;
+        explicit mixin_a(int v) noexcept
           : val(v) {}
     };
 
@@ -517,7 +522,7 @@ TEST(MixinWithTest, MultipleMixinsWith) {
     frame_t frame{
       context::background(),
       context::with<mixin_a>(123),
-      context::with<ctor_based_mixin>(42, "test")};
+      context::with<ctor_based_mixin>(42, "test"sv)};
 
     EXPECT_EQ(frame.mixin_a::val, 123);
     EXPECT_EQ(frame.ctor_based_mixin::value1, 42);
@@ -526,8 +531,8 @@ TEST(MixinWithTest, MultipleMixinsWith) {
 TEST(MixinWithTest, WithOrderIndependent) {
     struct mixin_a {
         int val{0};
-        mixin_a() = default;
-        explicit mixin_a(int v)
+        mixin_a() noexcept = default;
+        explicit mixin_a(int v) noexcept
           : val(v) {}
     };
 
@@ -538,7 +543,7 @@ TEST(MixinWithTest, WithOrderIndependent) {
     frame_t frame{
       context::background(),
       context::with<mixin_a>(77),
-      context::with<ctor_based_mixin>(99, "order_test")};
+      context::with<ctor_based_mixin>(99, "order_test"sv)};
 
     EXPECT_EQ(frame.ctor_based_mixin::value1, 99);
     EXPECT_EQ(frame.mixin_a::val, 77);
@@ -549,7 +554,7 @@ TEST(MixinWithTest, PartialWith) {
     using frame_t = context::context_frame<ctor_based_mixin, spy_mixin_a>;
 
     frame_t frame{
-      context::background(), context::with<ctor_based_mixin>(100, "partial")};
+      context::background(), context::with<ctor_based_mixin>(100, "partial"sv)};
 
     // spy_mixin_a default-constructed
     EXPECT_FALSE(frame.called);
@@ -594,7 +599,7 @@ TEST(MixinWithTest, HookBasedMixin) {
     using frame_t = context::context_frame<hook_based_mixin>;
 
     frame_t frame{
-      context::background(), context::with<hook_based_mixin>(42, "hello")};
+      context::background(), context::with<hook_based_mixin>(42, "hello"sv)};
 
     EXPECT_EQ(frame.value1, 42);
     EXPECT_EQ(frame.value2, "hello");
@@ -604,7 +609,7 @@ TEST(MixinWithTest, ConstructorBasedMixin) {
     using frame_t = context::context_frame<ctor_based_mixin>;
 
     frame_t frame{
-      context::background(), context::with<ctor_based_mixin>(99, "world")};
+      context::background(), context::with<ctor_based_mixin>(99, "world"sv)};
 
     EXPECT_EQ(frame.value1, 99);
     EXPECT_EQ(frame.value2, "world");
@@ -616,8 +621,8 @@ TEST(MixinWithTest, MixedInitStrategies) {
 
     frame_t frame{
       context::background(),
-      context::with<hook_based_mixin>(1, "hook"),
-      context::with<ctor_based_mixin>(2, "ctor")};
+      context::with<hook_based_mixin>(1, "hook"sv),
+      context::with<ctor_based_mixin>(2, "ctor"sv)};
 
     EXPECT_EQ(frame.hook_based_mixin::value1, 1);
     EXPECT_EQ(frame.hook_based_mixin::value2, "hook");
@@ -642,7 +647,7 @@ TEST(MixinWithTest, UninitializedMixinGetsHookCalled) {
 
     // Only initialize ctor_based_mixin, NOT zero_arg_hook_mixin
     frame_t frame{
-      context::background(), context::with<ctor_based_mixin>(42, "test")};
+      context::background(), context::with<ctor_based_mixin>(42, "test"sv)};
 
     // zero_arg_hook_mixin was default-constructed, but on_context_init()
     // should still have been called
@@ -656,14 +661,14 @@ TEST(MixinWithTest, ConstraintsRejectInvalidUsage) {
     static_assert(std::is_constructible_v<
                   frame_t,
                   context_ref,
-                  decltype(context::with<ctor_based_mixin>(1, "x"))>);
+                  decltype(context::with<ctor_based_mixin>(1, "x"sv))>);
 
     // Invalid: duplicate with<> for same mixin
     static_assert(!std::is_constructible_v<
                   frame_t,
                   context_ref,
-                  decltype(context::with<ctor_based_mixin>(1, "x")),
-                  decltype(context::with<ctor_based_mixin>(2, "y"))>);
+                  decltype(context::with<ctor_based_mixin>(1, "x"sv)),
+                  decltype(context::with<ctor_based_mixin>(2, "y"sv))>);
 
     // Invalid: with<> targets mixin not in composed_frame
     struct other_mixin {};
@@ -682,39 +687,6 @@ TEST(ContextFrameTest, WallDeadlineWithNoDeadline) {
     EXPECT_EQ(
       context::wall_deadline(ref),
       std::chrono::system_clock::time_point::max());
-}
-
-// Test: when mixin throws during construction, frame is properly unlinked
-// from parent (base class destructor runs during stack unwinding).
-TEST(ContextFrameTest, ThrowingMixinUnlinksFromParent) {
-    static int dtor_count = 0;
-
-    struct counting_mixin {
-        ~counting_mixin() { ++dtor_count; }
-    };
-
-    struct throwing_mixin {
-        throwing_mixin() { throw std::runtime_error("mixin throws"); }
-    };
-
-    test_frame parent{context::background()};
-    test_frame normal_child{context_ref{parent}};
-
-    dtor_count = 0;
-    using throwing_frame
-      = context::context_frame<counting_mixin, throwing_mixin>;
-
-    EXPECT_THROW(
-      { [[maybe_unused]] throwing_frame bad_child{context_ref{parent}}; },
-      std::runtime_error);
-
-    // counting_mixin destructor should have run during stack unwinding
-    EXPECT_EQ(dtor_count, 1);
-
-    // Parent should still be able to cancel - the failed child was unlinked
-    parent.cancel_handle().trigger(context::cancel_cause::manual);
-    EXPECT_TRUE(parent.is_cancelled());
-    EXPECT_TRUE(normal_child.is_cancelled());
 }
 
 // Test: moved-from context_ref remains valid per [lib.types.movedfrom].
@@ -777,21 +749,7 @@ TEST(ContextDeathTest, FrameDestroyedWithLiveRefs) {
 }
 #endif
 
-// Exception Safety & noexcept Specification Tests
-// ----------------------------------------------------------------------------
-//
-// | Mixin ctor | on_context_init | Frame noexcept? |
-// |------------|-----------------|-----------------|
-// | noexcept   | (none)          | yes             |
-// | noexcept   | noexcept        | yes             |
-// | noexcept   | throws          | no              |
-// | throws     | (any)           | no              |
-
 namespace {
-
-// Mixins for noexcept specification testing. Named by: {ctor}_{init}.
-// ctor: noexcept or throwing
-// init: none, noexcept, or throwing (with zero_arg variant for default path)
 
 struct noexcept_mixin {};
 
@@ -799,15 +757,7 @@ struct noexcept_ctor_mixin {
     noexcept_ctor_mixin(int) noexcept {}
 };
 
-struct throwing_mixin {
-    throwing_mixin() noexcept(false) {}
-};
-
-struct throwing_ctor_mixin {
-    throwing_ctor_mixin(int) noexcept(false) {}
-};
-
-struct noexcept_noexcept_init_mixin {
+struct noexcept_init_mixin {
     template<typename...>
     friend class context::context_frame;
 
@@ -815,7 +765,7 @@ private:
     void on_context_init(int) noexcept {}
 };
 
-struct noexcept_noexcept_zero_arg_init_mixin {
+struct noexcept_zero_arg_init_mixin {
     template<typename...>
     friend class context::context_frame;
 
@@ -823,90 +773,25 @@ private:
     void on_context_init() noexcept {}
 };
 
-struct noexcept_throwing_init_mixin {
-    template<typename...>
-    friend class context::context_frame;
-
-private:
-    void on_context_init(int) { throw std::runtime_error("init throws"); }
-};
-
-struct noexcept_throwing_zero_arg_init_mixin {
-    template<typename...>
-    friend class context::context_frame;
-
-private:
-    void on_context_init() { throw std::runtime_error("init throws"); }
-};
-
 } // namespace
 
 TEST(ContextFrameTest, FrameNoexceptSpecification) {
-    // Default constructor path (no with<>)
     static_assert(std::is_nothrow_constructible_v<
                   context::context_frame<noexcept_mixin>,
                   context_ref>);
-    static_assert(!std::is_nothrow_constructible_v<
-                  context::context_frame<throwing_mixin>,
-                  context_ref>);
-    static_assert(!std::is_nothrow_constructible_v<
-                  context::context_frame<noexcept_mixin, throwing_mixin>,
-                  context_ref>);
     static_assert(std::is_nothrow_constructible_v<
-                  context::context_frame<noexcept_noexcept_zero_arg_init_mixin>,
+                  context::context_frame<noexcept_zero_arg_init_mixin>,
                   context_ref>);
-    static_assert(!std::is_nothrow_constructible_v<
-                  context::context_frame<noexcept_throwing_zero_arg_init_mixin>,
-                  context_ref>);
-
-    // with<> path: mixin has matching constructor
+    static_assert(
+      std::is_nothrow_constructible_v<
+        context::context_frame<noexcept_mixin, noexcept_zero_arg_init_mixin>,
+        context_ref>);
     static_assert(std::is_nothrow_constructible_v<
                   context::context_frame<noexcept_ctor_mixin>,
                   context_ref,
                   decltype(context::with<noexcept_ctor_mixin>(0))>);
-    static_assert(!std::is_nothrow_constructible_v<
-                  context::context_frame<throwing_ctor_mixin>,
-                  context_ref,
-                  decltype(context::with<throwing_ctor_mixin>(0))>);
-
-    // with<> path: mixin uses on_context_init hook
     static_assert(std::is_nothrow_constructible_v<
-                  context::context_frame<noexcept_noexcept_init_mixin>,
+                  context::context_frame<noexcept_init_mixin>,
                   context_ref,
-                  decltype(context::with<noexcept_noexcept_init_mixin>(0))>);
-    static_assert(!std::is_nothrow_constructible_v<
-                  context::context_frame<noexcept_throwing_init_mixin>,
-                  context_ref,
-                  decltype(context::with<noexcept_throwing_init_mixin>(0))>);
-}
-
-TEST(ContextFrameTest, FrameExceptionPropagation) {
-    // Throwing constructor propagates
-    struct throwing_ctor {
-        throwing_ctor() { throw std::runtime_error("ctor throws"); }
-    };
-    EXPECT_THROW(
-      {
-          [[maybe_unused]] context::context_frame<throwing_ctor> frame{
-            context::background()};
-      },
-      std::runtime_error);
-
-    // Throwing on_context_init(args) propagates
-    EXPECT_THROW(
-      {
-          [[maybe_unused]] context::context_frame<noexcept_throwing_init_mixin>
-            frame(
-              context::background(),
-              context::with<noexcept_throwing_init_mixin>(42));
-      },
-      std::runtime_error);
-
-    // Throwing zero-arg on_context_init() propagates
-    EXPECT_THROW(
-      {
-          [[maybe_unused]] context::context_frame<
-            noexcept_throwing_zero_arg_init_mixin> frame{context::background()};
-      },
-      std::runtime_error);
+                  decltype(context::with<noexcept_init_mixin>(0))>);
 }
