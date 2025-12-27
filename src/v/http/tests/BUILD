@@ -1,4 +1,4 @@
-load("//bazel:test.bzl", "redpanda_cc_btest", "redpanda_cc_gtest", "redpanda_test_cc_library")
+load("//bazel:test.bzl", "redpanda_cc_bench", "redpanda_cc_btest", "redpanda_cc_gtest", "redpanda_test_cc_library")
 
 redpanda_test_cc_library(
     name = "utils",
@@ -122,5 +122,23 @@ redpanda_cc_gtest(
         "//src/v/http:rest_entity",
         "//src/v/test_utils:gtest",
         "@googletest//:gtest",
+    ],
+)
+
+redpanda_cc_bench(
+    name = "http_rpbench",
+    timeout = "short",
+    srcs = [
+        "http_bench.cc",
+    ],
+    cpu = 1,
+    deps = [
+        "//src/v/base",
+        "//src/v/bytes:iobuf",
+        "//src/v/http",
+        "//src/v/net",
+        "@boost//:beast",
+        "@seastar",
+        "@seastar//:benchmark",
     ],
 )
