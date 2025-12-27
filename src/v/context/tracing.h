@@ -30,9 +30,9 @@
 
 #include <fmt/format.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
-#include <ranges>
 #include <string_view>
 
 namespace context {
@@ -93,19 +93,38 @@ struct tracing_span_id {
 /// ID generation uses a counter-based mechanism similar to retry_chain_node:
 /// - Root spans get span_id 0
 /// - Child spans get sequential IDs from parent's fanout counter
-struct tracing_span_data {
+class tracing_span_data {
+    friend class tracing_span;
+
+public:
     tracing_id trace;
     tracing_span_id span;
     span_name name{"?"};
     const tracing_span_data* parent{nullptr};
+    time_point start_time{clock::now()};
+
+    /// Returns elapsed time since span creation.
+    [[nodiscard]] duration elapsed() const noexcept {
+        return clock::now() - start_time;
+    }
+
+private:
+    tracing_span_data() = default;
+
+    tracing_span_data(
+      tracing_id t,
+      tracing_span_id s,
+      span_name n,
+      const tracing_span_data* p) noexcept
+      : trace(t)
+      , span(s)
+      , name(n)
+      , parent(p)
+      , start_time(clock::now()) {}
+
     /// Fanout counter for generating child span IDs (like _fanout_id in
     /// retry_chain_node).
     mutable uint16_t next_child_id{0};
-
-    /// Returns parent's span ID, or zero if root.
-    [[nodiscard]] tracing_span_id parent_span() const noexcept {
-        return parent ? parent->span : tracing_span_id{};
-    }
 
     /// Create a child span (same trace_id, this span becomes parent).
     /// Child span ID is assigned from this span's fanout counter.
@@ -115,24 +134,62 @@ struct tracing_span_data {
         if (next_child_id < std::numeric_limits<uint16_t>::max()) [[likely]] {
             ++next_child_id;
         }
-        return tracing_span_data{
-          .trace = trace,
-          .span = tracing_span_id{.value = id},
-          .name = child_name,
-          .parent = this,
-        };
+        return tracing_span_data{trace, {id}, child_name, this};
     }
 
     /// Create a root span with a new trace.
     /// Root spans always have span_id 0.
-    static tracing_span_data create_root(span_name name) noexcept {
+    static tracing_span_data create_root(span_name root_name) noexcept {
         return tracing_span_data{
-          .trace = tracing_id::generate(),
-          .span = tracing_span_id{.value = 0},
-          .name = name,
-          .parent = nullptr,
-        };
+          tracing_id::generate(), {0}, root_name, nullptr};
     }
+};
+
+/// Lazy span backtrace for zero-allocation formatting.
+///
+/// Holds a context_ref for debug reference counting and formats on demand.
+/// Use with fmt::format or format_to() to write directly into an output buffer.
+///
+/// Example:
+/// ```cpp
+/// auto bt = ctx.span_backtrace();
+/// fmt::format_to(buf, "error at: {}", bt);
+/// ```
+class span_backtrace {
+public:
+    explicit span_backtrace(context_ref ctx) noexcept
+      : ctx_(ctx) {}
+
+    /// Format into an output iterator. Returns the iterator past the end.
+    template<typename OutputIt>
+    OutputIt format_to(OutputIt out) const {
+        const tracing_span_data* span = ctx_.trace_span();
+        const tracing_span_data* current = span;
+        while (current) {
+            if (current != span) {
+                out = std::copy_n(" <- ", 4, out);
+            }
+            auto name = current->name.view();
+            out = std::copy(name.begin(), name.end(), out);
+            current = current->parent;
+        }
+        return out;
+    }
+
+    /// Returns true if there's no span data.
+    [[nodiscard]] bool empty() const noexcept {
+        return ctx_.trace_span() == nullptr;
+    }
+
+    /// Returns the underlying span pointer.
+    [[nodiscard]] const tracing_span_data* span() const noexcept {
+        return ctx_.trace_span();
+    }
+
+private:
+    /// Stored as context_ref (not raw pointer) to enable debug ref-counting
+    /// assertions that catch use-after-frame-destruction.
+    context_ref ctx_;
 };
 
 /// Tracing span mixin for context_frame.
@@ -228,6 +285,14 @@ private:
             ss::logger::lambda_log_writer writer(
               [&](ss::internal::log_buf::inserter_iterator it) {
                   it = std::ranges::copy(prefix(), it).out;
+                  // Append elapsed + closing bracket
+                  if (auto* span = ctx_.trace_span()) {
+                      if (!ctx_.has_deadline()) {
+                          *it++ = ' ';
+                      }
+                      it = format_duration(it, span->elapsed());
+                      it = std::copy_n("] ", 2, it);
+                  }
                   return fmt::format_to(
                     it, fmt::runtime(format), std::forward<Args>(args)...);
               });
@@ -235,7 +300,23 @@ private:
         }
     }
 
+    /// Formats duration in human-readable form (integer ms, s, or m).
+    template<typename OutputIt>
+    static OutputIt format_duration(OutputIt it, duration d) {
+        auto ms
+          = std::chrono::duration_cast<std::chrono::milliseconds>(d).count();
+        if (ms >= 60'000) {
+            return fmt::format_to(it, "{}m", ms / 60'000);
+        } else if (ms >= 1'000) {
+            return fmt::format_to(it, "{}s", ms / 1'000);
+        } else {
+            return fmt::format_to(it, "{}ms", ms);
+        }
+    }
+
     ss::logger* logger_;
+    /// Stored as context_ref (not raw pointer) to enable debug ref-counting
+    /// assertions that catch use-after-frame-destruction.
     context_ref ctx_;
     mutable fmt::basic_memory_buffer<char, prefix_buf_size> prefix_buf_;
 };
@@ -250,3 +331,13 @@ private:
 }
 
 } // namespace context
+
+template<>
+struct fmt::formatter<context::span_backtrace> {
+    constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+
+    template<typename FormatContext>
+    auto format(const context::span_backtrace& bt, FormatContext& ctx) const {
+        return bt.format_to(ctx.out());
+    }
+};

@@ -28,20 +28,34 @@ class linker {
     template<typename...>
     friend class context_frame;
 
+    /// Trait for detecting linker mixin in context_frame.
+    static constexpr bool is_context_linker_mixin = true;
+
     struct bridge_frame final : detail::basic_context_frame {
-        bridge_frame(context_ref parent, context::cancel_handle target)
+        bridge_frame(
+          context_ref parent, context::cancel_handle target, context_ref source)
           : basic_context_frame(parent)
-          , target_(target) {
-            arm_cancel_callback(&cancel_thunk);
+          , target_(target)
+          , source_(source) {
+            if (is_cancelled()) [[unlikely]] {
+                on_context_cancel(cancel_cause());
+            }
         }
 
-        static void cancel_thunk(
-          detail::basic_context_frame* base,
-          context::cancel_cause cause) noexcept {
-            static_cast<bridge_frame*>(base)->target_.trigger(cause);
+        void on_context_cancel(context::cancel_cause cause) noexcept override {
+            target_.trigger(cause);
+        }
+
+        /// Returns the source context that created this link.
+        [[nodiscard]] const detail::basic_context_frame*
+        linked_source() const noexcept override {
+            return get_frame(source_);
         }
 
         context::cancel_handle target_;
+        /// Stored as context_ref (not raw pointer) to enable debug ref-counting
+        /// assertions that catch use-after-frame-destruction.
+        context_ref source_;
     };
 
 public:
@@ -54,11 +68,11 @@ private:
       && (std::same_as<std::decay_t<Refs>, context_ref> && ...))
     void on_context_init(this Self& self, Refs... extras) noexcept {
         auto handle = self.cancel_handle();
+        context_ref source{*self.parent_};
         (
           [&] {
               self.deadline_ = std::min(self.deadline_, extras.deadline());
-              // bridge_frame handles already-cancelled case internally
-              self.bridges_.emplace_back(extras, handle);
+              self.bridges_.emplace_back(extras, handle, source);
           }(),
           ...);
     }
@@ -67,12 +81,14 @@ private:
 };
 
 /// Creates a linked context frame.
-template<typename... Refs>
+template<typename Primary, typename... Refs>
 requires(
-  sizeof...(Refs) >= 1
-  && (std::same_as<std::decay_t<Refs>, context_ref> && ...))
-[[nodiscard]] auto link(context_ref primary, Refs... additional) {
-    return context_frame<linker>{primary, with<linker>(additional...)};
+  std::convertible_to<Primary, context_ref>
+  && (std::convertible_to<Refs, context_ref> && ...))
+[[nodiscard]] auto link(Primary&& primary, Refs&&... additional) {
+    return context_frame<linker>{
+      context_ref{std::forward<Primary>(primary)},
+      with<linker>(context_ref{std::forward<Refs>(additional)}...)};
 }
 
 } // namespace context

@@ -199,13 +199,13 @@ TEST(ContextFrameTest, CancelPropagationNoOverride) {
     struct child_frame final : public context::detail::basic_context_frame {
         explicit child_frame(context_ref parent)
           : context::detail::basic_context_frame(parent) {
-            arm_cancel_callback(&cancel_thunk);
+            if (is_cancelled()) [[unlikely]] {
+                on_context_cancel(cancel_cause());
+            }
         }
 
-        static void cancel_thunk(
-          context::detail::basic_context_frame* base,
-          context::cancel_cause) noexcept {
-            ++static_cast<child_frame*>(base)->on_cancel_called;
+        void on_context_cancel(context::cancel_cause) noexcept override {
+            ++on_cancel_called;
         }
 
         int on_cancel_called{0};

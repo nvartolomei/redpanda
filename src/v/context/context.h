@@ -76,6 +76,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <string_view>
 
 class context_ref;
 
@@ -83,7 +84,8 @@ namespace context {
 class deadline_timer;
 class linker;
 class tracing_span;
-struct tracing_span_data;
+class tracing_span_data;
+class span_backtrace;
 namespace detail {
 class basic_context_frame;
 } // namespace detail
@@ -188,6 +190,27 @@ public:
         return cancel_cause_;
     }
 
+    /// \brief Iterates over direct children of this frame.
+    /// \param fn Callback invoked for each child frame.
+    template<typename Fn>
+    void for_each_child(Fn&& fn) const {
+        for (auto* c = child_; c != nullptr; c = c->next_sibling_) {
+            fn(*c);
+        }
+    }
+
+    /// \brief Returns true if this frame has links to other contexts.
+    /// Used to detect linker frames for tree dumping.
+    [[nodiscard]] virtual bool has_links() const noexcept { return false; }
+
+    /// \brief Returns the source context if this is a bridge frame.
+    /// Bridge frames are internal helpers created by the linker mixin.
+    /// Returns nullptr for regular frames.
+    [[nodiscard]] virtual const basic_context_frame*
+    linked_source() const noexcept {
+        return nullptr;
+    }
+
     /// \brief Returns the absolute deadline time point.
     /// \note Immutable once set. Unchanged by cancellation. Returns the
     /// original time quota regardless of cancellation state. Check
@@ -222,24 +245,6 @@ public:
         propagate_cancel_to_children();
     }
 
-    /// Function pointer type for cancel callbacks.
-    /// \note Invocation order across frames is unspecified.
-    using cancel_callback_t
-      = void (*)(basic_context_frame*, context::cancel_cause) noexcept;
-
-    /// \brief Arms the cancel callback for this frame.
-    /// Called by context_frame during construction if any mixin has a cancel
-    /// hook.
-    /// \note If already cancelled, invokes the callback immediately.
-    void arm_cancel_callback(cancel_callback_t cb) noexcept {
-        auto cause = cancel_cause_;
-        if (cause != context::cancel_cause::not_cancelled) [[unlikely]] {
-            cb(this, cause);
-            return;
-        }
-        on_cancel_fn_ = cb;
-    }
-
     /// \brief Returns nearest ancestor's span data, or nullptr if none.
     /// Cached for O(1) access. Updated by context_frame when span mixin
     /// present.
@@ -257,6 +262,12 @@ public:
 
 protected:
     explicit basic_context_frame(context_ref parent) noexcept;
+
+    /// \brief Extracts the frame pointer from a context_ref.
+    /// Available to derived classes since basic_context_frame is a friend of
+    /// context_ref but friend access is not inherited.
+    static basic_context_frame* get_frame(context_ref ref) noexcept;
+
     ~basic_context_frame() noexcept {
         vassert(
           child_ == nullptr,
@@ -288,6 +299,11 @@ private:
     explicit basic_context_frame(background_ctor_tag) noexcept
       : parent_{nullptr} {}
 
+    /// \brief Called when this frame is cancelled.
+    /// Override in derived classes to handle cancellation.
+    /// \note Called at most once per frame.
+    virtual void on_context_cancel(context::cancel_cause) noexcept {}
+
     // Cause is already validated not to be not_cancelled.
     [[nodiscard]] bool
     do_cancel_this_frame(const context::cancel_cause cause) noexcept {
@@ -296,9 +312,7 @@ private:
             return false;
         }
         cancel_cause_ = cause;
-        if (on_cancel_fn_) {
-            on_cancel_fn_(this, cause);
-        }
+        on_context_cancel(cause);
         return true;
     }
 
@@ -340,7 +354,6 @@ private:
 
     context::time_point deadline_{context::no_deadline};
     const context::tracing_span_data* cached_trace_span_{nullptr};
-    cancel_callback_t on_cancel_fn_{nullptr};
 
 #ifdef CONTEXT_DEBUG_REF_COUNTING
     ssize_t live_refs_{0};
@@ -457,6 +470,18 @@ public:
         return frame_->trace_span();
     }
 
+    /// \brief Returns a lazy span backtrace for zero-allocation formatting.
+    /// Walks up the parent chain, producing output like:
+    /// "grandchild <- child <- root"
+    /// Use with fmt::format or call format_to() directly.
+    [[nodiscard]] context::span_backtrace span_backtrace() const noexcept;
+
+    /// \brief Iterates over direct children of this frame.
+    template<typename Fn>
+    void for_each_child(Fn&& fn) const {
+        frame_->for_each_child(std::forward<Fn>(fn));
+    }
+
 private:
     context::detail::basic_context_frame* frame_;
     expression_in_debug_mode(oncore _verify_shard);
@@ -484,6 +509,11 @@ inline detail::basic_context_frame::basic_context_frame(
     if (old_child) {
         old_child->prev_sibling_ = this;
     }
+}
+
+inline detail::basic_context_frame*
+detail::basic_context_frame::get_frame(context_ref ref) noexcept {
+    return ref.frame_;
 }
 
 inline cancel_handle::cancel_handle(detail::basic_context_frame& frame) noexcept

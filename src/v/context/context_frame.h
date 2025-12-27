@@ -153,8 +153,8 @@ public:
 
         (init_mixin<Mixins>(std::tuple<>{}), ...);
 
-        if constexpr (has_any_cancel_hook_v) {
-            this->arm_cancel_callback(&cancel_thunk);
+        if (this->is_cancelled()) [[unlikely]] {
+            on_context_cancel(this->cancel_cause());
         }
     }
 
@@ -189,8 +189,8 @@ public:
            detail::extract_init_args<Mixins>(std::forward<Inits>(inits)...)),
          ...);
 
-        if constexpr (has_any_cancel_hook_v) {
-            this->arm_cancel_callback(&cancel_thunk);
+        if (this->is_cancelled()) [[unlikely]] {
+            on_context_cancel(this->cancel_cause());
         }
     }
 
@@ -248,24 +248,15 @@ private:
     }
 
 private:
-    /// Check if any mixin has a cancel hook.
-    static constexpr bool has_any_cancel_hook_v
-      = (requires(Mixins& m, context::cancel_cause c) {
-            m.on_context_cancel(c);
-        } || ...);
-
-    /// Static thunk for cancel callback. Casts base pointer and dispatches
-    /// to mixin hooks.
-    static void cancel_thunk(
-      detail::basic_context_frame* base, context::cancel_cause cause) noexcept {
+    /// Dispatches cancel to mixin hooks.
+    void on_context_cancel(context::cancel_cause cause) noexcept override {
         static_assert(
           (detail::on_context_cancel_nothrow_v<context_frame, Mixins> && ...),
           "All mixin on_context_cancel() hooks must be noexcept");
 
-        auto* self = static_cast<context_frame*>(base);
         (..., [&] {
             constexpr bool has_hook = requires {
-                self->Mixins::on_context_cancel(cause);
+                this->Mixins::on_context_cancel(cause);
             };
             constexpr bool expects_hook = requires {
                 typename Mixins::cancellable;
@@ -281,9 +272,19 @@ private:
               "'on_context_cancel' is missing or private/unfriendly!");
 
             if constexpr (has_hook) {
-                self->Mixins::on_context_cancel(cause);
+                this->Mixins::on_context_cancel(cause);
             }
         }());
+    }
+
+    /// Check if any mixin provides links (e.g., linker mixin).
+    static constexpr bool has_linker_mixin_v = (requires {
+        Mixins::is_context_linker_mixin;
+    } || ...);
+
+    /// Returns true if this frame has a linker mixin.
+    [[nodiscard]] bool has_links() const noexcept override {
+        return has_linker_mixin_v;
     }
 };
 

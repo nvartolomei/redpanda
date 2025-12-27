@@ -28,15 +28,14 @@ struct sleeper_frame final : context::detail::basic_context_frame {
       : basic_context_frame(ctx)
       , timer([this] { done.set_value(); }) {
         timer.arm(dur);
-        arm_cancel_callback(&cancel_thunk);
+        if (is_cancelled()) [[unlikely]] {
+            on_context_cancel(cancel_cause());
+        }
     }
 
-    static void cancel_thunk(
-      context::detail::basic_context_frame* base,
-      context::cancel_cause cause) noexcept {
-        auto* self = static_cast<sleeper_frame*>(base);
-        if (self->timer.cancel()) {
-            self->done.set_exception(ssx::context_sleep_aborted{cause});
+    void on_context_cancel(context::cancel_cause cause) noexcept override {
+        if (timer.cancel()) {
+            done.set_exception(ssx::context_sleep_aborted{cause});
         }
     }
 };

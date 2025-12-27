@@ -19,11 +19,12 @@
 namespace context {
 
 std::string_view trace_logger::prefix() const {
-    auto* span = ctx_.trace_span();
     if (prefix_buf_.size() == 0) {
         auto out = std::back_inserter(prefix_buf_);
+        auto* span = ctx_.trace_span();
 
         if (!span) {
+            // No span: use complete prefix (no dynamic suffix needed)
             fmt::format_to(out, "[no_span] ");
             return {prefix_buf_.data(), prefix_buf_.size()};
         }
@@ -34,13 +35,26 @@ std::string_view trace_logger::prefix() const {
             ids.push_back(s->span.value);
         }
 
+        // Cache static part: trace~ids name [budget]
         out = fmt::format_to(out, "[{}", span->trace.value);
         for (unsigned short id : std::ranges::reverse_view(ids)) {
             out = fmt::format_to(out, "~{}", id);
         }
-        fmt::format_to(out, " {}] ", span->name.view());
+        out = fmt::format_to(out, " {}", span->name.view());
+
+        // Append budget>  (elapsed appended in log())
+        if (ctx_.has_deadline()) {
+            *out++ = ' ';
+            auto budget = ctx_.deadline() - span->start_time;
+            out = format_duration(out, budget);
+            *out++ = '>';
+        }
     }
     return {prefix_buf_.data(), prefix_buf_.size()};
 }
 
 } // namespace context
+
+context::span_backtrace context_ref::span_backtrace() const noexcept {
+    return context::span_backtrace{*this};
+}

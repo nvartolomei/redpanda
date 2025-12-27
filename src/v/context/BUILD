@@ -19,6 +19,7 @@ redpanda_cc_library(
     srcs = ["tracing.cc"],
     hdrs = [
         "abort_source.h",
+        "context_debug.h",
         "context_frame.h",
         "deadline_timer.h",
         "linker.h",
