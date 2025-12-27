@@ -85,14 +85,15 @@ PERF_TEST(tracing, traced_frame_create_1000) {
     return 1000;
 }
 
-// retry_chain_node construction
+// retry_chain_node child construction (fair comparison with context_frame)
 PERF_TEST(tracing, retry_chain_node_create_1000) {
     ss::abort_source as;
+    retry_chain_node root{as};
     std::optional<retry_chain_node> node;
 
     perf_tests::start_measuring_time();
     for (int i = 0; i < 1000; ++i) {
-        node.emplace(as);
+        node.emplace(&root);
         perf_tests::do_not_optimize(node);
         node.reset();
     }

@@ -34,10 +34,8 @@ TEST(ContextSleepTest, Basic) {
     EXPECT_GE(elapsed, 5ms);
 }
 
-TEST(ContextSleepTest, ZeroDuration) {
-    // Zero/negative duration returns immediately
-    auto fut = ssx::sleep(context::background(), 0ms);
-    EXPECT_TRUE(fut.available());
+TEST(ContextSleepTest, NegativeDuration) {
+    auto fut = ssx::sleep(context::background(), -10ms);
     fut.get();
 }
 

@@ -292,6 +292,21 @@ redpanda_cc_bench(
     ],
 )
 
+redpanda_cc_bench(
+    name = "context_sleep_rpbench",
+    timeout = "short",
+    srcs = [
+        "context_sleep_bench.cc",
+    ],
+    deps = [
+        "//src/v/context",
+        "//src/v/context:context_frame",
+        "//src/v/ssx:context_sleep",
+        "@seastar",
+        "@seastar//:benchmark",
+    ],
+)
+
 redpanda_cc_gtest(
     name = "rate_limited_function_test",
     timeout = "short",

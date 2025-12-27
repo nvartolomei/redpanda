@@ -227,10 +227,16 @@ public:
     using cancel_callback_t
       = void (*)(basic_context_frame*, context::cancel_cause) noexcept;
 
-    /// \brief Sets the cancel callback for this frame.
+    /// \brief Arms the cancel callback for this frame.
     /// Called by context_frame during construction if any mixin has a cancel
     /// hook.
-    void set_cancel_callback(cancel_callback_t cb) noexcept {
+    /// \note If already cancelled, invokes the callback immediately.
+    void arm_cancel_callback(cancel_callback_t cb) noexcept {
+        auto cause = cancel_cause_;
+        if (cause != context::cancel_cause::not_cancelled) [[unlikely]] {
+            cb(this, cause);
+            return;
+        }
         on_cancel_fn_ = cb;
     }
 

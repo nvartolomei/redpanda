@@ -32,7 +32,7 @@ class linker {
         bridge_frame(context_ref parent, context::cancel_handle target)
           : basic_context_frame(parent)
           , target_(target) {
-            set_cancel_callback(&cancel_thunk);
+            arm_cancel_callback(&cancel_thunk);
         }
 
         static void cancel_thunk(
@@ -57,10 +57,8 @@ private:
         (
           [&] {
               self.deadline_ = std::min(self.deadline_, extras.deadline());
+              // bridge_frame handles already-cancelled case internally
               self.bridges_.emplace_back(extras, handle);
-              if (extras.is_cancelled()) {
-                  handle.trigger(extras.cancel_cause());
-              }
           }(),
           ...);
     }

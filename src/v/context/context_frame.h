@@ -151,11 +151,10 @@ public:
           (init_mixin_nothrow<Mixins, std::tuple<>>() && ...),
           "All mixin on_context_init() hooks must be noexcept");
 
-        register_cancel_callback();
         (init_mixin<Mixins>(std::tuple<>{}), ...);
 
-        if (this->is_cancelled()) [[unlikely]] {
-            invoke_cancel_callback(this->cancel_cause());
+        if constexpr (has_any_cancel_hook_v) {
+            this->arm_cancel_callback(&cancel_thunk);
         }
     }
 
@@ -186,13 +185,12 @@ public:
            && ...),
           "All mixin on_context_init() hooks must be noexcept");
 
-        register_cancel_callback();
         (init_mixin<Mixins>(
            detail::extract_init_args<Mixins>(std::forward<Inits>(inits)...)),
          ...);
 
-        if (this->is_cancelled()) [[unlikely]] {
-            invoke_cancel_callback(this->cancel_cause());
+        if constexpr (has_any_cancel_hook_v) {
+            this->arm_cancel_callback(&cancel_thunk);
         }
     }
 
@@ -286,20 +284,6 @@ private:
                 self->Mixins::on_context_cancel(cause);
             }
         }());
-    }
-
-    /// Register cancel callback if any mixin has a hook.
-    void register_cancel_callback() noexcept {
-        if constexpr (has_any_cancel_hook_v) {
-            this->set_cancel_callback(&cancel_thunk);
-        }
-    }
-
-    /// Invoke cancel callback directly (for already-cancelled parent case).
-    void invoke_cancel_callback(context::cancel_cause cause) noexcept {
-        if constexpr (has_any_cancel_hook_v) {
-            cancel_thunk(this, cause);
-        }
     }
 };
 

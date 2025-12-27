@@ -199,7 +199,7 @@ TEST(ContextFrameTest, CancelPropagationNoOverride) {
     struct child_frame final : public context::detail::basic_context_frame {
         explicit child_frame(context_ref parent)
           : context::detail::basic_context_frame(parent) {
-            set_cancel_callback(&cancel_thunk);
+            arm_cancel_callback(&cancel_thunk);
         }
 
         static void cancel_thunk(
