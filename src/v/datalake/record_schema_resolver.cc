@@ -41,6 +41,8 @@ namespace datalake {
 namespace {
 
 namespace ppsr = pandaproxy::schema_registry;
+using resolved_type_cache_t
+  = std::unordered_map<schema_identifier, resolved_type>;
 
 checked<resolved_type, type_resolver::errc> translate_avro_schema(
   const ppsr::avro_schema_definition& avro_def,
@@ -153,24 +155,56 @@ checked<resolved_type, type_resolver::errc> translate_json_schema(
 
 struct schema_translating_visitor {
     schema_translating_visitor(
-      iobuf b, ppsr::schema_id id, shared_schema_t schema)
+      iobuf b,
+      ppsr::schema_id id,
+      shared_schema_t schema,
+      std::optional<std::reference_wrapper<resolved_type_cache_t>> type_cache)
       : buf_no_id(std::move(b))
       , id(id)
-      , schema(std::move(schema)) {}
+      , schema(std::move(schema))
+      , type_cache(type_cache) {}
     // Buffer without the schema ID.
     iobuf buf_no_id;
     ppsr::schema_id id;
     shared_schema_t schema;
+    std::optional<std::reference_wrapper<resolved_type_cache_t>> type_cache;
+
+    resolved_type* find_cached(const schema_identifier& ident) const {
+        if (!type_cache.has_value()) {
+            return nullptr;
+        }
+        auto& cache = type_cache->get();
+        auto it = cache.find(ident);
+        return it == cache.end() ? nullptr : &it->second;
+    }
+
+    void cache_translated(
+      schema_identifier ident, const resolved_type& translated) const {
+        if (!type_cache.has_value()) {
+            return;
+        }
+        type_cache->get().try_emplace(std::move(ident), translated.copy());
+    }
 
     checked<type_and_buf, type_resolver::errc>
     operator()(const ppsr::avro_schema_definition& avro_def) {
+        auto ident = schema_identifier{
+          .schema_id = id,
+          .protobuf_offsets = std::nullopt,
+        };
+        if (auto* cached = find_cached(ident)) {
+            return type_and_buf{
+              .type = cached->copy(), .parsable_buf = std::move(buf_no_id)};
+        }
+
         auto tr_res = translate_avro_schema(avro_def, id, schema);
         if (tr_res.has_error()) {
             return tr_res.error();
         }
+        auto translated = std::move(tr_res.value());
+        cache_translated(std::move(ident), translated);
         return type_and_buf{
-          .type = std::move(tr_res.value()),
-          .parsable_buf = std::move(buf_no_id)};
+          .type = std::move(translated), .parsable_buf = std::move(buf_no_id)};
     }
 
     checked<type_and_buf, type_resolver::errc>
@@ -180,6 +214,15 @@ struct schema_translating_visitor {
             return type_resolver::errc::bad_input;
         }
         auto offsets = std::move(offsets_res.value());
+        auto ident = schema_identifier{
+          .schema_id = id,
+          .protobuf_offsets = offsets.protobuf_offsets,
+        };
+        if (auto* cached = find_cached(ident)) {
+            return type_and_buf{
+              .type = cached->copy(),
+              .parsable_buf = std::move(offsets.shared_message_data)};
+        }
 
         auto tr_res = translate_protobuf_schema(
           pb_def, id, std::move(offsets.protobuf_offsets), schema);
@@ -187,56 +230,112 @@ struct schema_translating_visitor {
             return tr_res.error();
         }
 
+        auto translated = std::move(tr_res.value());
+        cache_translated(std::move(ident), translated);
         return type_and_buf{
-          .type = std::move(tr_res.value()),
+          .type = std::move(translated),
           .parsable_buf = std::move(offsets.shared_message_data)};
     }
 
     checked<type_and_buf, type_resolver::errc>
     operator()(const ppsr::json_schema_definition& json_def) {
+        auto ident = schema_identifier{
+          .schema_id = id,
+          .protobuf_offsets = std::nullopt,
+        };
+        if (auto* cached = find_cached(ident)) {
+            return type_and_buf{
+              .type = cached->copy(), .parsable_buf = std::move(buf_no_id)};
+        }
+
         auto tr_res = translate_json_schema(json_def, id);
         if (tr_res.has_error()) {
             return tr_res.error();
         }
+        auto translated = std::move(tr_res.value());
+        cache_translated(std::move(ident), translated);
         return type_and_buf{
-          .type = std::move(tr_res.value()),
-          .parsable_buf = std::move(buf_no_id)};
+          .type = std::move(translated), .parsable_buf = std::move(buf_no_id)};
     }
 };
 
 struct from_identifier_visitor {
-    from_identifier_visitor(schema_identifier ident, shared_schema_t schema)
+    from_identifier_visitor(
+      schema_identifier ident,
+      shared_schema_t schema,
+      std::optional<std::reference_wrapper<resolved_type_cache_t>> type_cache)
       : ident(std::move(ident))
-      , schema(std::move(schema)) {}
+      , schema(std::move(schema))
+      , type_cache(type_cache) {}
 
     schema_identifier ident;
     shared_schema_t schema;
+    std::optional<std::reference_wrapper<resolved_type_cache_t>> type_cache;
+
+    std::optional<resolved_type> get_cached() const {
+        if (!type_cache.has_value()) {
+            return std::nullopt;
+        }
+        auto& cache = type_cache->get();
+        auto it = cache.find(ident);
+        if (it == cache.end()) {
+            return std::nullopt;
+        }
+        return it->second.copy();
+    }
+
+    void cache_translated(const resolved_type& translated) const {
+        if (!type_cache.has_value()) {
+            return;
+        }
+        type_cache->get().try_emplace(ident, translated.copy());
+    }
 
     checked<resolved_type, type_resolver::errc>
     operator()(const ppsr::avro_schema_definition& avro_def) {
+        if (auto cached = get_cached(); cached.has_value()) {
+            return std::move(cached.value());
+        }
         if (ident.protobuf_offsets) {
             return type_resolver::errc::bad_input;
         }
-        return translate_avro_schema(avro_def, ident.schema_id, schema);
+        auto tr_res = translate_avro_schema(avro_def, ident.schema_id, schema);
+        if (tr_res.has_error()) {
+            return tr_res.error();
+        }
+        cache_translated(tr_res.value());
+        return std::move(tr_res.value());
     }
     checked<resolved_type, type_resolver::errc>
     operator()(const ppsr::protobuf_schema_definition& pb_def) {
+        if (auto cached = get_cached(); cached.has_value()) {
+            return std::move(cached.value());
+        }
         if (!ident.protobuf_offsets) {
             return type_resolver::errc::bad_input;
         }
-        return translate_protobuf_schema(
-          pb_def,
-          ident.schema_id,
-          std::move(ident.protobuf_offsets.value()),
-          schema);
+        auto tr_res = translate_protobuf_schema(
+          pb_def, ident.schema_id, ident.protobuf_offsets.value(), schema);
+        if (tr_res.has_error()) {
+            return tr_res.error();
+        }
+        cache_translated(tr_res.value());
+        return std::move(tr_res.value());
     }
     checked<resolved_type, type_resolver::errc>
     operator()(const ppsr::json_schema_definition& json_def) {
+        if (auto cached = get_cached(); cached.has_value()) {
+            return std::move(cached.value());
+        }
         if (ident.protobuf_offsets) {
             return type_resolver::errc::bad_input;
         }
-
-        return translate_json_schema(json_def, ident.schema_id);
+        auto tr_res = translate_json_schema(json_def, ident.schema_id);
+        if (tr_res.has_error()) {
+            return tr_res.error();
+        }
+        cache_translated(tr_res.value());
+        return std::move(tr_res.value());
     }
 };
 
@@ -403,11 +502,19 @@ record_schema_resolver::resolve_buf_type(std::optional<iobuf> b) const {
     auto shared_schema = schema_res.value();
     co_return shared_schema->visit(
       schema_translating_visitor{
-        std::move(buf_no_id), schema_id, shared_schema});
+        std::move(buf_no_id),
+        schema_id,
+        shared_schema,
+        std::ref(resolved_type_cache_)});
 }
 
 ss::future<checked<resolved_type, type_resolver::errc>>
 record_schema_resolver::resolve_identifier(schema_identifier ident) const {
+    if (auto it = resolved_type_cache_.find(ident);
+        it != resolved_type_cache_.end()) {
+        co_return it->second.copy();
+    }
+
     auto schema_res = co_await get_schema(&sr_, cache_, ident.schema_id);
     if (schema_res.has_error()) {
         co_return schema_res.error();
@@ -415,7 +522,8 @@ record_schema_resolver::resolve_identifier(schema_identifier ident) const {
 
     auto shared_schema = schema_res.value();
     co_return shared_schema->visit(
-      from_identifier_visitor{std::move(ident), shared_schema});
+      from_identifier_visitor{
+        std::move(ident), shared_schema, std::ref(resolved_type_cache_)});
 }
 
 latest_subject_schema_resolver::latest_subject_schema_resolver(
@@ -572,7 +680,7 @@ latest_subject_schema_resolver::resolve_identifier(
     }
     auto shared_schema = schema_res.value();
     co_return shared_schema->visit(
-      from_identifier_visitor{std::move(ident), shared_schema});
+      from_identifier_visitor{std::move(ident), shared_schema, std::nullopt});
 }
 
 resolved_type resolved_type::copy() const {

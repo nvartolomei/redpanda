@@ -230,10 +230,17 @@ ss::future<ss::stop_iteration> record_multiplexer::do_multiplex(
                 continue;
             }
         }
-        auto record_type = _record_translator.build_type(
-          std::move(val_type_res.value().type));
-        auto writer_iter = _writers.find(record_type.comps);
+        auto schema_comps = record_schema_components{
+          .key_identifier = std::nullopt,
+          .val_identifier = val_type_res.value().type
+                              ? std::make_optional(
+                                  val_type_res.value().type->id)
+                              : std::nullopt,
+        };
+        auto writer_iter = _writers.find(schema_comps);
         if (writer_iter == _writers.end()) {
+            auto record_type = _record_translator.build_type(
+              std::move(val_type_res.value().type));
             auto ensure_res = co_await _table_creator.ensure_table(
               _ntp.tp.topic, _topic_revision, record_type.comps);
             if (ensure_res.has_error()) {

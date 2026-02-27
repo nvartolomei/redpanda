@@ -20,6 +20,7 @@
 #include <seastar/core/future.hh>
 
 #include <chrono>
+#include <unordered_map>
 
 namespace iceberg {
 class json_conversion_ir;
@@ -191,6 +192,10 @@ public:
 private:
     schema::registry& sr_;
     std::optional<std::reference_wrapper<schema_cache>> cache_;
+    // Cache translated schema IDs to avoid rebuilding the Iceberg type and
+    // JSON IR for each record.
+    mutable std::unordered_map<schema_identifier, resolved_type>
+      resolved_type_cache_;
 };
 
 // latest_subject_schema_resolver is a schema resolver that uses the latest

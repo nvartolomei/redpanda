@@ -12,6 +12,7 @@
 #include "base/seastarx.h"
 #include "bytes/iobuf.h"
 #include "container/chunked_hash_map.h"
+#include "iceberg/conversion/json_schema/ir.h"
 #include "iceberg/conversion/json_schema/tests/data_generator.h"
 #include "model/timestamp.h"
 #include "pandaproxy/schema_registry/types.h"
@@ -76,6 +77,12 @@ private:
       sstring_hash,
       sstring_eq>
       _id_by_name;
+    chunked_hash_map<
+      ss::sstring,
+      iceberg::conversion::json_schema::schema,
+      sstring_hash,
+      sstring_eq>
+      _json_schema_by_name;
     schema::registry* _sr;
 };
 

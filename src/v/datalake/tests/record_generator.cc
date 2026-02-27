@@ -242,65 +242,72 @@ record_generator::add_random_json_record(
   std::string_view name,
   std::optional<iobuf> key,
   iceberg::conversion::json_schema::testing::generator_config config) {
-    using namespace pandaproxy::schema_registry;
-    auto it = _id_by_name.find(name);
-    if (it == _id_by_name.end()) {
+    auto id_it = _id_by_name.find(name);
+    if (id_it == _id_by_name.end()) {
         co_return error{fmt::format("Schema {} is missing", name)};
     }
-    auto ctx_schema_id = it->second;
-    auto schema_def_res = co_await _sr->get_valid_schema(ctx_schema_id);
-    if (!schema_def_res.has_value()) {
-        co_return error{
-          fmt::format("Schema {} not in store", ctx_schema_id.id)};
-    }
-    auto& schema_def = schema_def_res.value();
-    if (schema_def.type() != schema_type::json) {
-        co_return error{
-          fmt::format("Schema {} has wrong type: {}", name, schema_def.type())};
-    }
+    auto ctx_schema_id = id_it->second;
 
-    ss::sstring raw_schema_str;
-    struct visitor {
-        ss::sstring& raw;
-        void operator()(const avro_schema_definition&) {}
-        void operator()(const protobuf_schema_definition&) {}
-        void operator()(const json_schema_definition& d) {
-            auto buf = d.raw()();
-            raw = ss::sstring(
-              iobuf_const_parser(buf).read_string(buf.size_bytes()));
+    auto compiled_it = _json_schema_by_name.find(name);
+    if (compiled_it == _json_schema_by_name.end()) {
+        using namespace pandaproxy::schema_registry;
+        auto schema_def_res = co_await _sr->get_valid_schema(ctx_schema_id);
+        if (!schema_def_res.has_value()) {
+            co_return error{
+              fmt::format("Schema {} not in store", ctx_schema_id.id)};
         }
-    };
-    schema_def.visit(visitor{raw_schema_str});
-    if (raw_schema_str.empty()) {
-        co_return error{
-          fmt::format("Schema {} didn't resolve to JSON schema", name)};
-    }
+        auto& schema_def = schema_def_res.value();
+        if (schema_def.type() != schema_type::json) {
+            co_return error{fmt::format(
+              "Schema {} has wrong type: {}", name, schema_def.type())};
+        }
 
-    json::Document doc;
-    doc.Parse(raw_schema_str.c_str(), raw_schema_str.size());
-    if (doc.HasParseError()) {
-        co_return error{fmt::format(
-          "Failed to parse JSON schema: {}",
-          rapidjson::GetParseError_En(doc.GetParseError()))};
-    }
+        ss::sstring raw_schema_str;
+        struct visitor {
+            ss::sstring& raw;
+            void operator()(const avro_schema_definition&) {}
+            void operator()(const protobuf_schema_definition&) {}
+            void operator()(const json_schema_definition& d) {
+                auto buf = d.raw()();
+                raw = ss::sstring(
+                  iobuf_const_parser(buf).read_string(buf.size_bytes()));
+            }
+        };
+        schema_def.visit(visitor{raw_schema_str});
+        if (raw_schema_str.empty()) {
+            co_return error{
+              fmt::format("Schema {} didn't resolve to JSON schema", name)};
+        }
 
-    std::optional<iceberg::conversion::json_schema::schema> compiled;
-    try {
-        compiled.emplace(
-          iceberg::conversion::json_schema::frontend().compile(
-            doc, "https://example.com/schema.json", std::nullopt));
-    } catch (
-      const iceberg::conversion::json_schema::unsupported_feature_error& e) {
-        co_return error{
-          fmt::format("Failed to compile JSON schema: {}", e.what())};
-    } catch (const std::exception& e) {
-        co_return error{
-          fmt::format("Failed to compile JSON schema: {}", e.what())};
+        json::Document doc;
+        doc.Parse(raw_schema_str.c_str(), raw_schema_str.size());
+        if (doc.HasParseError()) {
+            co_return error{fmt::format(
+              "Failed to parse JSON schema: {}",
+              rapidjson::GetParseError_En(doc.GetParseError()))};
+        }
+
+        try {
+            auto compiled
+              = iceberg::conversion::json_schema::frontend().compile(
+                doc, "https://example.com/schema.json", std::nullopt);
+            compiled_it = _json_schema_by_name
+                            .emplace(ss::sstring{name}, std::move(compiled))
+                            .first;
+        } catch (
+          const iceberg::conversion::json_schema::unsupported_feature_error&
+            e) {
+            co_return error{
+              fmt::format("Failed to compile JSON schema: {}", e.what())};
+        } catch (const std::exception& e) {
+            co_return error{
+              fmt::format("Failed to compile JSON schema: {}", e.what())};
+        }
     }
 
     auto json_data = iceberg::conversion::json_schema::testing::generator(
                        config)
-                       .generate_json(compiled->root());
+                       .generate_json(compiled_it->second.root());
 
     iobuf val;
     val.append("\0", 1);
