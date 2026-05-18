@@ -35,6 +35,7 @@ redpanda_test_cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//src/v/base",
         "//src/v/iceberg:datatypes",
         "//src/v/iceberg:values",
         "//src/v/random:generators",
@@ -539,6 +540,7 @@ redpanda_cc_gtest(
         "//src/v/iceberg:values_avro",
         "//src/v/random:generators",
         "//src/v/test_utils:gtest",
+        "@avro",
         "@googletest//:gtest",
     ],
 )
