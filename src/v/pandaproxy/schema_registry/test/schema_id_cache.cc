@@ -63,8 +63,12 @@ BOOST_AUTO_TEST_CASE(test_schema_id_cache_basic_retrieval) {
 BOOST_AUTO_TEST_CASE(test_schema_id_cache_capacity) {
     config::config_store store;
 
-    config::property<size_t> p{
-      store, "capacity", "", {.needs_restart = config::needs_restart::no}};
+    config::property<size_t> p{store, config::static_metadata([] {
+                                   return config::base_property::metadata{
+                                     .name = "capacity",
+                                     .needs_restart = config::needs_restart::no,
+                                   };
+                               })};
     auto reset_p = ss::defer([&p]() { p.reset(); });
     p.set_value(size_t{2});
     pps::schema_id_cache c{p.bind()};

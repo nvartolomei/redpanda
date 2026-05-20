@@ -56,10 +56,14 @@ struct readers_cache_test_fixture : seastar_test {
     config::property<size_t> make_max_size_property(size_t default_value) {
         return config::property<size_t>(
           store,
-          "max_cache_size",
-          "max_cache_size",
-          {.needs_restart = config::needs_restart::no,
-           .visibility = config::visibility::tunable},
+          config::static_metadata([] {
+              return config::base_property::metadata{
+                .name = "max_cache_size",
+                .desc = "max_cache_size",
+                .needs_restart = config::needs_restart::no,
+                .visibility = config::visibility::tunable,
+              };
+          }),
           default_value);
     }
 
