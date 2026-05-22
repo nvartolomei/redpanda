@@ -25,11 +25,10 @@ class mock_property {
 public:
     mock_property(T value)
       : _mock_store()
-      , _property(_mock_store, static_metadata([] {
+      , _property(_mock_store, static_metadata<[] {
                       return base_property::metadata{
-                        .name = "anonymous",
-                        .needs_restart = needs_restart::no};
-                  })) {
+                        .name = "anonymous", .needs_restart = restart_no};
+                  }>()) {
         _property.set_value(value);
     }
 

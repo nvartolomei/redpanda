@@ -37,72 +37,72 @@ struct test_config : public config::config_store {
     test_config()
       : bounded_int(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "bounded_int",
                 .desc = "An integer with some bounds set",
               };
-          }),
+          }>(),
           16384,
           {.min = 4096, .max = 32768, .align = 16})
       , bounded_int_opt(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "bounded_int_opt",
                 .desc = "An optional integer with some bounds set",
               };
-          }),
+          }>(),
           std::nullopt,
           {.min = 4096, .max = 32768, .align = 16})
       , odd_constraint(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "odd_constraint",
                 .desc = "Property value has to be odd",
               };
-          }),
+          }>(),
           1,
           {.oddeven = config::odd_even_constraint::odd})
       , bounded_double(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "bounded_double",
                 .desc = "A float with some bounds set",
               };
-          }),
+          }>(),
           1.618033988749,
           {.min = -1, .max = 2.236067977})
       , bounded_double_opt(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "bounded_double_opt",
                 .desc = "An options float with some bounds set",
               };
-          }),
+          }>(),
           std::nullopt,
           {.min = -1, .max = 2.236067977})
       , bounded_opt_ms(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "bounded_opt_ms",
                 .desc = "An optional duration",
               };
-          }),
+          }>(),
           std::nullopt,
           {.min = 5ms})
       , minmax_bounded_opt_ms(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "bounded_opt_ms",
                 .desc = "An optional duration",
               };
-          }),
+          }>(),
           std::nullopt,
           {.min = 5ms, .max = 100ms}) {}
 };

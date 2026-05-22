@@ -26,80 +26,80 @@ configuration::configuration(const YAML::Node& cfg)
 configuration::configuration()
   : brokers(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "brokers",
             .desc = "Network addresses of the Kafka API servers to which the "
                     "HTTP Proxy client should connect.",
           };
-      }),
+      }>(),
       std::vector<net::unresolved_address>({{"127.0.0.1", 9092}}))
   , broker_tls(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "broker_tls",
             .desc = "TLS configuration for the Kafka API servers to which the "
                     "HTTP Proxy client should connect.",
           };
-      }),
+      }>(),
       config::tls_config(),
       config::tls_config::validate)
   , retries(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "retries",
             .desc = "Number of times to retry a request to a broker.",
           };
-      }),
+      }>(),
       5)
   , retry_base_backoff(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "retry_base_backoff_ms",
             .desc = "Delay (in milliseconds) for initial retry backoff.",
           };
-      }),
+      }>(),
       100ms)
   , produce_batch_record_count(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "produce_batch_record_count",
             .desc = "Number of records to batch before sending to broker.",
           };
-      }),
+      }>(),
       1000)
   , produce_batch_size_bytes(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "produce_batch_size_bytes",
             .desc = "Number of bytes to batch before sending to broker.",
           };
-      }),
+      }>(),
       1048576)
   , produce_batch_delay(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "produce_batch_delay_ms",
             .desc = "Delay (in milliseconds) to wait before sending batch.",
           };
-      }),
+      }>(),
       100ms)
   , produce_compression_type(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "produce_compression_type",
             .desc = "Enable or disable compression by the Kafka client. "
                     "Specify `none` to disable compression or one of the "
                     "supported types [gzip, snappy, lz4, zstd].",
           };
-      }),
+      }>(),
       "none",
       [](const ss::sstring& v) -> std::optional<ss::sstring> {
           constexpr auto supported_types = std::to_array<std::string_view>(
@@ -114,24 +114,24 @@ configuration::configuration()
       })
   , produce_shutdown_delay(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "produce_shutdown_delay_ms",
             .desc = "Delay (in milliseconds) to allow for final flush of "
                     "buffers before shutting down.",
           };
-      }),
+      }>(),
       0ms)
   , produce_ack_level(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "produce_ack_level",
             .desc = "Number of acknowledgments the producer requires the "
                     "leader to have received before considering a request "
                     "complete.",
           };
-      }),
+      }>(),
       -1,
       [](int16_t acks) -> std::optional<ss::sstring> {
           if (acks < -1 || acks > 1) {
@@ -141,63 +141,63 @@ configuration::configuration()
       })
   , consumer_request_timeout(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "consumer_request_timeout_ms",
             .desc = "Interval (in milliseconds) for consumer request timeout.",
           };
-      }),
+      }>(),
       100ms)
   , consumer_request_min_bytes(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "consumer_request_min_bytes",
             .desc = "Minimum bytes to fetch per request.",
           };
-      }),
+      }>(),
       1,
       {.min = 0})
   , consumer_request_max_bytes(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "consumer_request_max_bytes",
             .desc = "Maximum bytes to fetch per request.",
           };
-      }),
+      }>(),
       1_MiB,
       {.min = 0})
   , consumer_session_timeout(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "consumer_session_timeout_ms",
             .desc = "Timeout (in milliseconds) for consumer session.",
           };
-      }),
+      }>(),
       10s)
   , consumer_rebalance_timeout(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "consumer_rebalance_timeout_ms",
             .desc = "Timeout (in milliseconds) for consumer rebalance.",
           };
-      }),
+      }>(),
       2s)
   , consumer_heartbeat_interval(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "consumer_heartbeat_interval_ms",
             .desc = "Interval (in milliseconds) for consumer heartbeats.",
           };
-      }),
+      }>(),
       500ms)
   , sasl_mechanism(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "sasl_mechanism",
             .desc
@@ -213,11 +213,11 @@ configuration::configuration()
               "https://docs.redpanda.com/current/manage/security/"
               "authentication/",
           };
-      }),
+      }>(),
       "")
   , scram_username(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "scram_username",
             .desc
@@ -230,11 +230,11 @@ configuration::configuration()
               "must configure this property if your HTTP Proxy listeners use "
               "`authentication_method: none`.",
           };
-      }),
+      }>(),
       "")
   , scram_password(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "scram_password",
             .desc
@@ -246,13 +246,13 @@ configuration::configuration()
               "25.2, ephemeral credentials for HTTP Proxy are removed. You "
               "must configure this property if your HTTP Proxy listeners use "
               "`authentication_method: none`.",
-            .secret = config::is_secret::yes,
+            .secret = config::secret_yes,
           };
-      }),
+      }>(),
       "")
   , client_identifier(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "client_identifier",
             .desc
@@ -260,7 +260,7 @@ configuration::configuration()
               "the HTTP Proxy client. This identifier can help debug or "
               "monitor client activities.",
           };
-      }),
+      }>(),
       "test_client") {}
 
 namespace {

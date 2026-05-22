@@ -18,27 +18,27 @@ namespace config {
 node_config::node_config() noexcept
   : developer_mode(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "developer_mode",
             .desc = "Skips most of the checks performed at startup, not "
                     "recomended for production use",
             .visibility = visibility::tunable,
           };
-      }),
+      }>(),
       false)
-  , data_directory(*this, static_metadata([] {
+  , data_directory(*this, static_metadata<[] {
       return base_property::metadata{
         .name = "data_directory",
         .desc
         = "Path to the directory for storing Redpanda's streaming data files.",
-        .required = required::yes,
+        .required = required_yes,
         .visibility = visibility::user,
       };
-  }))
+  }>())
   , node_id(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "node_id",
             .desc = "A number that uniquely identifies the broker within the "
@@ -48,7 +48,7 @@ node_config::node_config() noexcept
                     "changed after a broker joins the cluster.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       std::nullopt,
       [](std::optional<model::node_id> id) -> std::optional<ss::sstring> {
           if (id && (*id)() < 0) {
@@ -58,7 +58,7 @@ node_config::node_config() noexcept
       })
   , rack(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "rack",
             .desc = "A label that identifies a failure zone. Apply the same "
@@ -68,11 +68,11 @@ node_config::node_config() noexcept
                     "partition replicas across different failure zones.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       std::nullopt)
   , seed_servers(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "seed_servers",
             .desc
@@ -101,7 +101,7 @@ node_config::node_config() noexcept
               "cluster formation.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       {},
       [](std::vector<seed_server> s) -> std::optional<ss::sstring> {
           std::sort(s.begin(), s.end());
@@ -114,7 +114,7 @@ node_config::node_config() noexcept
       })
   , empty_seed_starts_cluster(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "empty_seed_starts_cluster",
             .desc = "Controls how a new cluster is formed. All brokers in a "
@@ -126,46 +126,46 @@ node_config::node_config() noexcept
                     "accidental cluster formation.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       true)
   , rpc_server(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "rpc_server",
             .desc
             = "IP address and port for the Remote Procedure Call (RPC) server.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       net::unresolved_address("127.0.0.1", 33145))
   , rpc_server_tls(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "rpc_server_tls",
             .desc = "TLS configuration for the RPC server.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       tls_config(),
       tls_config::validate)
   , kafka_api(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "kafka_api",
             .desc = "IP address and port of the Kafka API endpoint that "
                     "handles requests.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       {config::broker_authn_endpoint{
         .address = net::unresolved_address("127.0.0.1", 9092),
         .authn_method = std::nullopt}})
   , kafka_api_tls(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "kafka_api_tls",
             .desc
@@ -173,39 +173,39 @@ node_config::node_config() noexcept
               "endpoint.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       {},
       endpoint_tls_config::validate_many)
   , admin(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "admin",
             .desc = "Network address for the Admin API[] server.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       {model::broker_endpoint(net::unresolved_address("127.0.0.1", 9644))})
   , admin_api_tls(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "admin_api_tls",
             .desc = "Specifies the TLS configuration for the HTTP Admin API.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       {},
       endpoint_tls_config::validate_many)
-  , coproc_supervisor_server(*this, static_metadata([] {
+  , coproc_supervisor_server(*this, static_metadata<[] {
       return base_property::metadata{
         .name = "coproc_supervisor_server",
         .visibility = visibility::deprecated,
       };
-  }))
+  }>())
   , emergency_disable_data_transforms(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "emergency_disable_data_transforms",
             .desc = "Override the cluster property `data_transforms_enabled` "
@@ -213,55 +213,55 @@ node_config::node_config() noexcept
                     "emergency shutoff button.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       false)
   , admin_api_doc_dir(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "admin_api_doc_dir",
             .desc = "Path to the API specifications for the Admin API.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       "/usr/share/redpanda/admin-api-doc")
-  , dashboard_dir(*this, static_metadata([] {
+  , dashboard_dir(*this, static_metadata<[] {
       return base_property::metadata{
         .name = "dashboard_dir",
         .visibility = visibility::deprecated,
       };
-  }))
+  }>())
   , cloud_storage_cache_directory(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "cloud_storage_cache_directory",
             .desc = "Directory for archival cache. Should be present when "
                     "`cloud_storage_enabled` is present",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       std::nullopt)
   , cloud_storage_inventory_hash_store(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "cloud_storage_inventory_hash_path_directory",
             .desc = "Directory to store inventory report hashes for use by "
                     "cloud storage scrubber",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       std::nullopt)
-  , enable_central_config(*this, static_metadata([] {
+  , enable_central_config(*this, static_metadata<[] {
       return base_property::metadata{
         .name = "enable_central_config",
         .visibility = visibility::deprecated,
       };
-  }))
+  }>())
   , crash_loop_limit(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "crash_loop_limit",
             .desc = "A limit on the number of consecutive times a broker can "
@@ -272,11 +272,11 @@ node_config::node_config() noexcept
                     "broker-properties/#crash_loop_limit.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       5) // default value
   , crash_loop_sleep_sec(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "crash_loop_sleep_sec",
             .desc = "The amount of time the broker sleeps before terminating "
@@ -286,44 +286,44 @@ node_config::node_config() noexcept
                     "broker-properties/#crash_loop_limit.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       std::nullopt)
   , upgrade_override_checks(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "upgrade_override_checks",
             .desc = "Whether to violate safety checks when starting a Redpanda "
                     "version newer than the cluster's consensus version.",
             .visibility = visibility::tunable,
           };
-      }),
+      }>(),
       false)
   , memory_allocation_warning_threshold(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "memory_allocation_warning_threshold",
             .desc = "Threshold for log messages that contain a larger memory "
                     "allocation than specified.",
             .visibility = visibility::tunable,
           };
-      }),
+      }>(),
       128_KiB + 1) // 128 KiB is the largest allowed allocation size
   , storage_failure_injection_enabled(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "storage_failure_injection_enabled",
             .desc = "If `true`, inject low level storage failures on the write "
                     "path. Do _not_ use for production instances.",
             .visibility = visibility::tunable,
           };
-      }),
+      }>(),
       false)
   , recovery_mode_enabled(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "recovery_mode_enabled",
             .desc
@@ -332,22 +332,22 @@ node_config::node_config() noexcept
               "are allowed.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       false)
   , storage_failure_injection_config_path(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "storage_failure_injection_config_path",
             .desc = "Path to the configuration file used for low level storage "
                     "failure injection.",
             .visibility = visibility::tunable,
           };
-      }),
+      }>(),
       std::nullopt)
   , verbose_logging_timeout_sec_max(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "verbose_logging_timeout_sec_max",
             .desc = "Maximum duration in seconds for verbose (`TRACE` or "
@@ -356,12 +356,12 @@ node_config::node_config() noexcept
                     "overridden in the Admin API on a per-request basis.",
             .visibility = visibility::tunable,
           };
-      }),
+      }>(),
       std::nullopt,
       {.min = 1s})
   , fips_mode(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "fips_mode",
             .desc = "Controls whether Redpanda starts in FIPS mode. This "
@@ -379,25 +379,25 @@ node_config::node_config() noexcept
                     "exist or does not return `1`, Redpanda immediately exits.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       fips_mode_flag::disabled,
       {fips_mode_flag::disabled,
        fips_mode_flag::enabled,
        fips_mode_flag::permissive})
   , openssl_config_file(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "openssl_config_file",
             .desc = "Path to the configuration file used by OpenSSL to "
                     "properly load the FIPS-compliant module.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       std::nullopt)
   , openssl_module_directory(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "openssl_module_directory",
             .desc = "Path to the directory that contains the OpenSSL "
@@ -405,11 +405,11 @@ node_config::node_config() noexcept
                     "for is `fips.so`.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       std::nullopt)
   , node_id_overrides(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "node_id_overrides",
             .desc = "List of node ID and UUID overrides to be applied at "
@@ -419,28 +419,28 @@ node_config::node_config() noexcept
                     "UUID.",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       {})
   , _advertised_rpc_api(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "advertised_rpc_api",
             .desc
             = "Address of RPC endpoint published to other cluster members",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       std::nullopt)
   , _advertised_kafka_api(
       *this,
-      static_metadata([] {
+      static_metadata<[] {
           return base_property::metadata{
             .name = "advertised_kafka_api",
             .desc = "Address of Kafka API published to the clients",
             .visibility = visibility::user,
           };
-      }),
+      }>(),
       {}) {}
 
 void validate_multi_node_property_config(

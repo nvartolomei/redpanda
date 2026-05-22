@@ -48,112 +48,112 @@ struct test_config : public config::config_store {
     test_config()
       : optional_int(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "optional_int",
                 .desc = "An optional int value",
                 .visibility = config::visibility::tunable,
               };
-          }),
+          }>(),
           100)
-      , required_string(*this, config::static_metadata([] {
+      , required_string(*this, config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "required_string",
             .desc = "Required string value",
-            .needs_restart = config::needs_restart::no,
+            .needs_restart = config::restart_no,
             .visibility = config::visibility::user,
           };
-      }))
+      }>())
       , an_int64_t(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "an_int64_t",
                 .desc = "Some other int type",
               };
-          }),
+          }>(),
           200)
       , an_aggregate(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "an_aggregate",
                 .desc = "Aggregate type",
               };
-          }),
+          }>(),
           testing::custom_aggregate{"str", 10})
-      , strings(*this, config::static_metadata([] {
+      , strings(*this, config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "strings",
             .desc = "Required strings vector",
           };
-      }))
+      }>())
       , nullable_int(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "nullable_int",
                 .desc = "A nullable (std::optional) int value",
               };
-          }),
+          }>(),
           std::nullopt)
       , nullable_string(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "optional_string",
                 .desc = "An optional string value",
               };
-          }),
+          }>(),
           std::nullopt)
       , nullable_strings(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "optional_strings",
                 .desc = "An optional strings vector",
               };
-          }),
+          }>(),
           std::nullopt)
       , boolean(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "boolean",
                 .desc = "Plain boolean property",
-                .needs_restart = config::needs_restart::no,
+                .needs_restart = config::restart_no,
               };
-          }),
+          }>(),
           false)
-      , seconds(*this, config::static_metadata([] {
+      , seconds(*this, config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "seconds", .desc = "Plain seconds"};
-      }))
-      , optional_seconds(*this, config::static_metadata([] {
+      }>())
+      , optional_seconds(*this, config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "optional_seconds", .desc = "Optional seconds"};
-      }))
-      , milliseconds(*this, config::static_metadata([] {
+      }>())
+      , milliseconds(*this, config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "milliseconds", .desc = "Plain milliseconds"};
-      }))
-      , default_secret_string(*this, config::static_metadata([] {
+      }>())
+      , default_secret_string(*this, config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "default_secret_string",
             .desc = "Secret string value set to the default",
-            .secret = config::is_secret::yes,
+            .secret = config::secret_yes,
           };
-      }))
-      , secret_string(*this, config::static_metadata([] {
+      }>())
+      , secret_string(*this, config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "secret_string",
             .desc = "Secret string value",
-            .secret = config::is_secret::yes,
+            .secret = config::secret_yes,
           };
-      }))
+      }>())
       , aliased_bool(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               static constexpr std::string_view _aliases[] = {
                 "aliased_bool_legacy"};
               return config::base_property::metadata{
@@ -161,16 +161,16 @@ struct test_config : public config::config_store {
                 .desc = "Property with a compat alias",
                 .aliases = _aliases,
               };
-          }),
+          }>(),
           true)
       , bounded_int(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "bounded_int",
                 .desc = "Bounded integer property",
               };
-          }),
+          }>(),
           50,
           {.min = 0, .max = 100}) {}
 };
@@ -672,7 +672,7 @@ aliased_bool_legacy: false
 
 TEST(ConfigStoreTest, PendingValueSuppressesActive) {
     auto cfg = test_config();
-    // optional_int has needs_restart::yes (default metadata)
+    // optional_int has restart_yes (default metadata)
     EXPECT_EQ(cfg.optional_int(), 100);
     EXPECT_FALSE(cfg.optional_int.has_pending());
 
@@ -902,7 +902,7 @@ TEST(ConfigStoreTest, ToJsonWithPendingValues) {
     auto errors = cfg.read_yaml(minimal_valid_configuration());
     EXPECT_EQ(errors.size(), 0);
 
-    // optional_int has needs_restart::yes (default metadata), default=100
+    // optional_int has restart_yes (default metadata), default=100
     cfg.optional_int.set_pending_value(YAML::Load("42"));
     EXPECT_TRUE(cfg.optional_int.has_pending());
     EXPECT_EQ(cfg.optional_int(), 100);
@@ -934,7 +934,7 @@ TEST(ConfigStoreTest, ToJsonSecretWithPendingValues) {
     auto errors = cfg.read_yaml(minimal_valid_configuration());
     EXPECT_EQ(errors.size(), 0);
 
-    // secret_string: secret, needs_restart::yes, default=""
+    // secret_string: secret, restart_yes, default=""
     // Active is default (empty), so not redacted even with redact=yes.
     // Set a pending non-default value: should be redacted when pending=yes.
     cfg.secret_string.set_pending_value(YAML::Load("hunter2"));

@@ -27,48 +27,48 @@ configuration::configuration(const YAML::Node& cfg)
 configuration::configuration()
   : pandaproxy_api(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "pandaproxy_api",
             .desc = "Rest API listen address and port",
           };
-      }),
+      }>(),
       {config::rest_authn_endpoint{
         .address = net::unresolved_address("0.0.0.0", 8082),
         .authn_method = std::nullopt}})
   , pandaproxy_api_tls(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "pandaproxy_api_tls",
             .desc = "TLS configuration for Pandaproxy api.",
           };
-      }),
+      }>(),
       {},
       config::endpoint_tls_config::validate_many)
   , advertised_pandaproxy_api(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "advertised_pandaproxy_api",
             .desc = "Network address for the HTTP Proxy API server to publish "
                     "to clients.",
           };
-      }),
+      }>(),
       {},
       model::broker_endpoint::validate_many)
   , api_doc_dir(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "api_doc_dir",
             .desc = "Path to the API specifications for the HTTP Proxy API.",
           };
-      }),
+      }>(),
       "/usr/share/redpanda/proxy-api-doc")
   , consumer_instance_timeout(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "consumer_instance_timeout_ms",
             .desc
@@ -76,11 +76,11 @@ configuration::configuration()
               "consumer is considered idle when it's not making requests or "
               "heartbeats.",
           };
-      }),
+      }>(),
       std::chrono::minutes{5})
   , client_cache_max_size(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "client_cache_max_size",
             .desc = "The maximum number of Kafka client connections that "
@@ -89,9 +89,9 @@ configuration::configuration()
                     "by keeping the most recently used clients in memory, "
                     "facilitating quicker reconnections for frequent clients "
                     "while limiting memory usage.",
-            .needs_restart = config::needs_restart::yes,
+            .needs_restart = config::restart_yes,
           };
-      }),
+      }>(),
       10,
       [](const size_t max_size) {
           std::optional<ss::sstring> msg{std::nullopt};
@@ -102,15 +102,15 @@ configuration::configuration()
       })
   , client_keep_alive(
       *this,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "client_keep_alive",
             .desc = "Time, in milliseconds, that an idle client connection may "
                     "remain open to the HTTP Proxy API.",
-            .needs_restart = config::needs_restart::yes,
+            .needs_restart = config::restart_yes,
             .example = "300000",
           };
-      }),
+      }>(),
       5min,
       [](const std::chrono::milliseconds& keep_alive) {
           std::optional<ss::sstring> msg{std::nullopt};

@@ -26,36 +26,36 @@ struct test_config : public config::config_store {
     test_config()
       : valid_retention(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "valid_retention",
                 .desc = "A positive value",
-                .needs_restart = config::needs_restart::no,
+                .needs_restart = config::restart_no,
                 .visibility = config::visibility::user,
               };
-          }),
+          }>(),
           10080min)
       , inf_retention(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "inf_retention",
                 .desc = "-1 should be interpreted as infinity",
-                .needs_restart = config::needs_restart::no,
+                .needs_restart = config::restart_no,
                 .visibility = config::visibility::user,
               };
-          }),
+          }>(),
           10080min)
       , default_retention(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "default_retention",
                 .desc = "not set retention config should return default value",
-                .needs_restart = config::needs_restart::no,
+                .needs_restart = config::restart_no,
                 .visibility = config::visibility::user,
               };
-          }),
+          }>(),
           10080min) {}
 };
 

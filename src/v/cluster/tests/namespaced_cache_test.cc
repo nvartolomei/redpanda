@@ -447,14 +447,14 @@ TEST_F(fixture, test_changing_max_size) {
     config::config_store store;
     config::property<size_t> max_size_property(
       store,
-      config::static_metadata([] {
+      config::static_metadata<[] {
           return config::base_property::metadata{
             .name = "max_size",
             .desc = "test_max_size",
-            .needs_restart = config::needs_restart::no,
+            .needs_restart = config::restart_no,
             .visibility = config::visibility::user,
           };
-      }),
+      }>(),
       15);
     /**
      * Create cache with capacity of 15 and min 3 entries per namespace

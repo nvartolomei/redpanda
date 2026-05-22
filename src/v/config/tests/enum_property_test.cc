@@ -22,32 +22,32 @@ struct test_config : public config::config_store {
     test_config()
       : enum_str(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "enum_str",
                 .desc = "A string with only certain values allowed",
               };
-          }),
+          }>(),
           "foo",
           {"foo", "bar", "baz"})
       , opt_enum_str(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "opt_enum_str",
                 .desc = "A string with only certain values allowed",
               };
-          }),
+          }>(),
           "foo",
           {std::nullopt, "foo", "bar", "baz"})
       , opt_enum_implicit_null_str(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "opt_enum_implicit_null_str",
                 .desc = "A string with only certain values allowed",
               };
-          }),
+          }>(),
           "foo",
           {"foo", "bar", "baz"}) {}
 };

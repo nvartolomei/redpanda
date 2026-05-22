@@ -38,6 +38,19 @@ using needs_restart = ss::bool_class<struct needs_restart_tag>;
 using is_secret = ss::bool_class<struct is_secret_tag>;
 using gets_restored = ss::bool_class<struct gets_restored_tag>;
 
+// Constexpr counterparts of ss::bool_class<Tag>::yes / ::no, which are
+// declared `static const` in Seastar and therefore cannot appear in
+// constant expressions (notably, in NTTP-form `static_metadata` factories
+// whose result is stored in a `static constexpr` local).
+inline constexpr required required_yes{true};
+inline constexpr required required_no{false};
+inline constexpr needs_restart restart_yes{true};
+inline constexpr needs_restart restart_no{false};
+inline constexpr is_secret secret_yes{true};
+inline constexpr is_secret secret_no{false};
+inline constexpr gets_restored restored_yes{true};
+inline constexpr gets_restored restored_no{false};
+
 // Whether to redact secrets. If true, `secret_placeholder` should be used
 // instead of the config value.
 using redact_secrets = ss::bool_class<struct redact_secrets_tag>;
@@ -129,11 +142,11 @@ public:
         std::string_view name;
         std::string_view desc;
 
-        required required{required::no};
-        needs_restart needs_restart{needs_restart::yes};
+        required required{required_no};
+        needs_restart needs_restart{restart_yes};
         std::string_view example;
         visibility visibility{visibility::user};
-        is_secret secret{is_secret::no};
+        is_secret secret{secret_no};
 
         // Whether or not this property should be restored following cluster
         // restore events.
@@ -142,7 +155,7 @@ public:
         // define its own set of configs required for e.g., interacting with
         // cloud storage, or creating hardware-specific definitions like cache
         // sizes.
-        gets_restored gets_restored{gets_restored::yes};
+        gets_restored gets_restored{restored_yes};
 
         // Aliases are used exclusively for input: all output (e.g. listing
         // configuration) uses the primary name of the property.
@@ -289,13 +302,16 @@ protected:
 };
 
 /// Yields a pointer to a function-local-static metadata initialized from
-/// the given factory's return value. Each call site instantiates this
-/// template with a unique closure type, so each gets its own static; all
-/// shards hitting the same call site share one metadata instance.
-template<typename Factory>
-[[nodiscard]] const base_property::metadata*
-static_metadata(Factory&& factory) {
-    static const base_property::metadata _m = factory();
+/// the given factory's return value. The factory is a non-type template
+/// parameter, so it must be a captureless lambda whose body is a constant
+/// expression. The local is `static constexpr`, so the metadata lives in
+/// `.rodata`: there is no dynamic initialization, no thread-safe-init
+/// guard variable, and no exit-time destructor. Each call site (a unique
+/// lambda literal) instantiates the template with its own closure type,
+/// so each gets its own constant; all shards share that one constant.
+template<auto Factory>
+[[nodiscard]] constexpr const base_property::metadata* static_metadata() {
+    static constexpr base_property::metadata _m = Factory();
     return &_m;
 }
 

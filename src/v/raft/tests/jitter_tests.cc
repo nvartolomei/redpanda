@@ -41,13 +41,13 @@ struct config_store : public config::config_store {
     config_store()
       : timeout(
           *this,
-          config::static_metadata([] {
+          config::static_metadata<[] {
               return config::base_property::metadata{
                 .name = "timeout",
                 .desc = "timeout for the jitter",
-                .needs_restart = config::needs_restart::no,
+                .needs_restart = config::restart_no,
               };
-          }),
+          }>(),
           std::chrono::milliseconds(100)) {}
 };
 
