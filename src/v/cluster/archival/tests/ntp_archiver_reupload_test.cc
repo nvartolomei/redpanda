@@ -117,6 +117,41 @@ static constexpr std::string_view gap_manifest = R"json({
 }
 })json";
 
+// Manifest whose compacted reupload cursor (last_uploaded_compacted_offset) has
+// already advanced to the manifest tail. The next reupload offset is therefore
+// above the last segment's base offset, so no manifest segment remains to be
+// reuploaded.
+static constexpr std::string_view fully_reuploaded_manifest = R"json({
+"version": 1,
+"namespace": "kafka",
+"topic": "test-topic",
+"partition": 42,
+"revision": 0,
+"last_offset": 1010,
+"last_uploaded_compacted_offset": 1010,
+"segments": {
+    "0-1-v1.log": {
+        "is_compacted": true,
+        "size_bytes": 1024,
+        "base_offset": 0,
+        "committed_offset": 499
+    },
+    "500-1-v1.log": {
+        "is_compacted": true,
+        "size_bytes": 1024,
+        "base_offset": 500,
+        "committed_offset": 999
+    },
+    "1000-4-v1.log": {
+        "is_compacted": true,
+        "size_bytes": 2048,
+        "base_offset": 1000,
+        "committed_offset": 1010,
+        "max_timestamp": 1234567890
+    }
+}
+})json";
+
 struct reupload_fixture : public archiver_fixture {
     void create_segment(segment_desc seg) {
         auto segment = get_local_storage_api()
@@ -766,6 +801,91 @@ FIXTURE_TEST(test_upload_when_reupload_disabled, reupload_fixture) {
     config::shard_local_cfg()
       .get("cloud_storage_enable_compacted_topic_reupload")
       .set_value(true);
+}
+
+FIXTURE_TEST(test_skip_reupload_when_nothing_to_reupload, reupload_fixture) {
+    std::vector<segment_desc> segments = {
+      {manifest_ntp, model::offset(0), model::term_id(1), 500, 2},
+      {manifest_ntp, model::offset(500), model::term_id(1), 500, 2},
+      {manifest_ntp, model::offset(1000), model::term_id(4), 10},
+    };
+
+    // Compaction and reupload are both enabled, so the compacted reupload path
+    // is considered.
+    initialize(segments);
+    auto action = ss::defer([this] { archiver->stop().get(); });
+
+    auto part = partition();
+    cluster::details::archival_metadata_stm_accessor stm_acc{
+      *part->archival_meta_stm()};
+
+    // The compacted reupload cursor sits at the manifest tail (1010), above the
+    // last segment's base offset (1000). The reupload range covers no manifest
+    // segment, so schedule_uploads must skip the compacted upload rather than
+    // schedule one that segment_collector would immediately discard.
+    stm_acc.replace_manifest(fully_reuploaded_manifest);
+    const auto& stm_manifest = part->archival_meta_stm()->manifest();
+
+    listen();
+
+    archival::ntp_archiver::batch_result expected{{0, 0, 0}, {0, 0, 0}};
+    upload_and_verify(archiver.value(), expected);
+    requests_size_eventually(0);
+
+    BOOST_REQUIRE_EQUAL(
+      stm_manifest.get_last_uploaded_compacted_offset(), model::offset{1010});
+    BOOST_REQUIRE(stm_manifest.replaced_segments().empty());
+}
+
+FIXTURE_TEST(
+  test_skip_reupload_when_local_log_start_past_manifest, reupload_fixture) {
+    std::vector<segment_desc> segments = {
+      {manifest_ntp, model::offset(0), model::term_id(1), 500, 2},
+      {manifest_ntp, model::offset(500), model::term_id(1), 500, 2},
+    };
+
+    // Compaction and reupload are both enabled, so the compacted reupload path
+    // is considered.
+    initialize(segments);
+    auto action = ss::defer([this] { archiver->stop().get(); });
+
+    auto part = partition();
+    listen();
+
+    // Upload both segments to cloud.
+    auto expected = archival::ntp_archiver::batch_result{{2, 0, 0}, {0, 0, 0}};
+    upload_and_verify(archiver.value(), expected);
+    requests_size_eventually(5);
+
+    const cloud_storage::partition_manifest& stm_manifest
+      = part->archival_meta_stm()->manifest();
+    BOOST_REQUIRE_EQUAL(stm_manifest.get_last_offset(), model::offset{999});
+    BOOST_REQUIRE_EQUAL(
+      stm_manifest.get_last_uploaded_compacted_offset(), model::offset{});
+
+    // Evict the entire local log by prefix truncating to one past the manifest
+    // tail (999), mirroring retention/recovery where the cloud region is no
+    // longer present locally.
+    reset_http_call_state();
+    disk_log_impl()
+      ->truncate_prefix(
+        storage::truncate_prefix_config(
+          model::offset{1000}, stm_manifest.last_segment()->delta_offset_end))
+      .get();
+    BOOST_REQUIRE_EQUAL(
+      disk_log_impl()->offsets().start_offset, model::offset{1000});
+
+    // The compacted reupload range now starts at the local log start (1000),
+    // one past the manifest tail and above the last segment's base offset
+    // (500), so no manifest segment is locally covered and schedule_uploads
+    // must not schedule a compacted upload.
+    expected = archival::ntp_archiver::batch_result{{0, 0, 0}, {0, 0, 0}};
+    upload_and_verify(archiver.value(), expected);
+    requests_size_eventually(0);
+
+    BOOST_REQUIRE_EQUAL(
+      stm_manifest.get_last_uploaded_compacted_offset(), model::offset{});
+    BOOST_REQUIRE(stm_manifest.replaced_segments().empty());
 }
 
 FIXTURE_TEST(test_upload_limit, reupload_fixture) {
