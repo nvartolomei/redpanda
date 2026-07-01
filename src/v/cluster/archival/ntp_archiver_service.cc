@@ -2023,6 +2023,21 @@ ntp_archiver::schedule_single_upload(const upload_context& upload_ctx) {
       });
 }
 
+namespace {
+
+bool may_have_manifest_segment_to_reupload(
+  const cloud_storage::partition_manifest& m,
+  model::offset compacted_reupload_start_offset) {
+    auto last_segment = m.last_segment();
+    if (!last_segment.has_value()) {
+        return false;
+    }
+
+    return compacted_reupload_start_offset <= last_segment->base_offset;
+}
+
+} // namespace
+
 ss::future<std::vector<ntp_archiver::scheduled_upload>>
 ntp_archiver::schedule_uploads(model::offset max_offset_exclusive) {
     // We have to increment last offset to guarantee progress.
@@ -2052,9 +2067,6 @@ ntp_archiver::schedule_uploads(model::offset max_offset_exclusive) {
         start_upload_offset = _parent.log()->offsets().start_offset;
     }
 
-    auto compacted_segments_upload_start = model::next_offset(
-      manifest().get_last_uploaded_compacted_offset());
-
     std::vector<upload_context> params;
 
     params.push_back({
@@ -2067,15 +2079,28 @@ ntp_archiver::schedule_uploads(model::offset max_offset_exclusive) {
 
     if (
       config::shard_local_cfg().cloud_storage_enable_compacted_topic_reupload()
-      && _parent.get_ntp_config().is_locally_compacted()
-      && compacted_segments_upload_start < start_upload_offset) {
-        params.push_back({
-          .upload_kind = segment_upload_kind::compacted,
-          .start_offset = compacted_segments_upload_start,
-          .end_offset_exclusive = model::offset::max(),
-          .allow_reuploads = allow_reuploads_t::yes,
-          .archiver_term = _start_term,
-        });
+      && _parent.get_ntp_config().is_locally_compacted()) {
+        auto compacted_reupload_start_offset = std::max(
+          _parent.log()->offsets().start_offset,
+          model::next_offset(manifest().get_last_uploaded_compacted_offset()));
+
+        if (
+          may_have_manifest_segment_to_reupload(
+            manifest(), compacted_reupload_start_offset)) {
+            params.push_back({
+              .upload_kind = segment_upload_kind::compacted,
+              .start_offset = compacted_reupload_start_offset,
+              .end_offset_exclusive = model::offset::max(),
+              .allow_reuploads = allow_reuploads_t::yes,
+              .archiver_term = _start_term,
+            });
+        } else {
+            vlog(
+              _rtclog.debug,
+              "Skipping compacted segment reupload. No manifest segments are "
+              "covered locally by the reupload range starting at offset {}",
+              compacted_reupload_start_offset);
+        }
     }
 
     co_return co_await schedule_uploads(std::move(params));
