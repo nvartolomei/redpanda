@@ -57,6 +57,18 @@ public:
           tst_log.debug,
           "Total appended size: {} bytes",
           reference.size_bytes());
+        // Close (flush + truncate) and verify the on-disk file here so no test
+        // body has to remember to. ~segment_appender aborts on an unclosed
+        // appender, so closing here also keeps a failing test from turning into
+        // a process abort that masks the real failure. Skip the content check
+        // when the body already failed: its file state is expected to be off,
+        // and the check would only add noise on top of the real failure.
+        if (appender) {
+            co_await appender->close();
+            if (!HasFailure()) {
+                EXPECT_TRUE(co_await file_content_equal_to_reference());
+            }
+        }
         co_await ss::remove_file(file_name);
     }
 
@@ -210,8 +222,6 @@ TEST_F(SegmentAppenderFixture, AppendMixedData) {
     ops.emplace_back(write_op(256));
     ops.emplace_back(flush_op(true));
     execute_operations(std::move(ops)).get();
-    appender->close().get();
-    ASSERT_TRUE(file_content_equal_to_reference().get());
 }
 
 TEST_F(SegmentAppenderFixture, AppendAllSizesUpTo1MiB) {
@@ -219,9 +229,6 @@ TEST_F(SegmentAppenderFixture, AppendAllSizesUpTo1MiB) {
     for (auto i = 1; i <= 4096; i += 1) {
         execute_operation(write_op(i)).get();
     }
-
-    appender->close().get();
-    ASSERT_TRUE(file_content_equal_to_reference().get());
 }
 
 TEST_F(SegmentAppenderFixture, TestLargeAppends) {
@@ -229,9 +236,6 @@ TEST_F(SegmentAppenderFixture, TestLargeAppends) {
     for (size_t i = 1; i <= 128 * 16_KiB; i += 16_KiB) {
         execute_operation(write_op(i)).get();
     }
-
-    appender->close().get();
-    ASSERT_TRUE(file_content_equal_to_reference().get());
 }
 
 TEST_F(SegmentAppenderFixture, TestTruncation) {
@@ -250,8 +254,6 @@ TEST_F(SegmentAppenderFixture, TestTruncation) {
     }
 
     execute_operations(std::move(ops)).get();
-    appender->close().get();
-    ASSERT_TRUE(file_content_equal_to_reference().get());
 }
 
 TEST_F(SegmentAppenderFixture, TestFlushesAreMerged) {
@@ -268,23 +270,17 @@ TEST_F(SegmentAppenderFixture, TestFlushesAreMerged) {
     EXPECT_GE(stats->fsyncs, 1);
     // TODO: fix possible redundant flushes in segment appender
     // EXPECT_LE(appender->get_stats().fsyncs, 2);
-    appender->close().get();
-    ASSERT_TRUE(file_content_equal_to_reference().get());
 }
 
 TEST_F(SegmentAppenderFixture, TestConcurrentFlushes) {
     execute_concurrent_flush_and_writes(1, 16_KiB).get();
     ASSERT_GT(stats->bytes_copied_in_chunk_remainder, 0);
-    appender->close().get();
-    ASSERT_TRUE(file_content_equal_to_reference().get());
     ASSERT_EQ(reference.size_bytes(), 16_KiB);
 }
 
 TEST_F(SegmentAppenderFixture, TestConcurrentFlushesPageBoundaryWrites) {
     execute_concurrent_flush_and_writes(4_KiB, 1_MiB).get();
     ASSERT_EQ(stats->bytes_copied_in_chunk_remainder, 0);
-    appender->close().get();
-    ASSERT_TRUE(file_content_equal_to_reference().get());
     ASSERT_GE(reference.size_bytes(), 1_MiB);
 }
 
@@ -294,8 +290,6 @@ TEST_F(SegmentAppenderFixture, TestConcurrentFlushesSmallWritesShifted) {
     // now execute concurrent flushes with 1 byte writes
     execute_concurrent_flush_and_writes(1, 16_KiB).get();
     ASSERT_GT(stats->bytes_copied_in_chunk_remainder, 0);
-    appender->close().get();
-    ASSERT_TRUE(file_content_equal_to_reference().get());
     ASSERT_GE(reference.size_bytes(), 24_KiB);
 }
 
