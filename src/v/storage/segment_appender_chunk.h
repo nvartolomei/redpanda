@@ -91,6 +91,15 @@ public:
     size_t bytes_pending() const { return _pos - _flushed_pos; }
     size_t flushed_pos() const { return _flushed_pos; }
 
+    /// The position one past the last byte of this chunk that a dispatched
+    /// write is currently reading, or 0 when no write for this chunk is in
+    /// flight. Writes are rounded up to a full page, so a write that ended
+    /// mid-page keeps reading the trailing partial page that subsequent appends
+    /// would land in; appending below this position would mutate memory the
+    /// kernel is still reading.
+    size_t inflight_dma_end() const { return _inflight_dma_end; }
+    void set_inflight_dma_end(size_t pos) { _inflight_dma_end = pos; }
+
     size_t append(const char* src, size_t len) {
         const size_t sz = std::min(len, space_left());
         std::copy_n(src, sz, get_current());
@@ -100,6 +109,7 @@ public:
 
     void reset() {
         _flushed_pos = _pos = 0;
+        _inflight_dma_end = 0;
         // allow chunk reuse
         std::memset(_buf.get(), 0, _chunk_size);
     }
@@ -133,6 +143,7 @@ private:
     storage::alignment _alignment{0};
     size_t _pos{0};
     size_t _flushed_pos{0};
+    size_t _inflight_dma_end{0};
     std::unique_ptr<char[], ss::free_deleter> _buf;
 
 public:

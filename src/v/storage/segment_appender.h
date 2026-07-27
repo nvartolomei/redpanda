@@ -234,15 +234,6 @@ private:
     // still heavy weight operations compared to regular flush()
     ss::future<> hard_flush();
 
-    /**
-     * Returns true if there is an inflight write for the current head chunk and
-     * that write is already dispatched.
-     */
-    bool is_chunk_write_dispatched(const chunk_ptr& chunk) const {
-        return chunk && !_inflight.empty() && _inflight.back()->chunk == chunk
-               && _inflight.back()->state == inflight_write::DISPATCHED;
-    }
-
     enum class write_state : char { QUEUED = 1, DISPATCHED, DONE };
 
     struct inflight_write {

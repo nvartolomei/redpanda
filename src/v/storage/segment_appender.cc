@@ -164,13 +164,20 @@ ss::future<> segment_appender::do_append(const char* buf, size_t n) {
             co_await do_next_adaptive_fallocation();
             continue;
         }
-        // we need to copy the reminder of the chunk into the new one not write
-        // to the one currently being written
-        if (is_chunk_write_dispatched(_head)) {
-            // if head write is dispatched it means there is at least one
-            // inflight write. Always copy the remainder to a new chunk
-            // to simplify the logic (aligned case is very rare ~0.02%)
-            auto last_inflight_write = _inflight.back();
+        /*
+         * A dispatched write is reading the head chunk up to its
+         * inflight_dma_end(), which is rounded up to a full page. If the write
+         * ended mid-page it is still reading the trailing partial page that
+         * this append would land in, and mutating a buffer the kernel is
+         * reading shows up as corruption in that page on some filesystems and
+         * hardware RAID controllers. Copy the unflushed remainder into a fresh
+         * chunk and append there instead.
+         *
+         * Only a dispatched write is a hazard. A queued write has not handed
+         * its buffer to the kernel yet, and appending in place is what lets the
+         * next write merge into it.
+         */
+        if (_head && _head->size() < _head->inflight_dma_end()) {
             auto old_head = std::exchange(_head, nullptr);
             /**
              * NOTE: Why we do not release _prev_head_write semaphore ?
@@ -198,18 +205,21 @@ ss::future<> segment_appender::do_append(const char* buf, size_t n) {
             _head = new_head;
             _opts.shared_stats->bytes_copied_in_chunk_remainder += remainder_sz;
             /**
-             * This is the place where we need to release the old head or
-             * mark it for release after the write completes. The
-             * last_inflight_write reference may not longer be valid after
-             * the scheduling point when the new chunk was requested.
+             * Release the old head, or hand that off to the last write still
+             * using it. Writes to one chunk are serialized by _prev_head_write
+             * and so complete in order, which makes the newest entry for the
+             * old head the one that finishes with it. That entry may still be
+             * QUEUED: an older write for the same chunk can be the dispatched
+             * one that sent us here.
+             *
+             * _inflight must be re-read rather than captured before the
+             * scheduling point above, since writes may have completed and been
+             * popped while we waited for the new chunk.
              */
-
-            if (last_inflight_write->state == inflight_write::DISPATCHED) {
-                // chunk write isn't finished yet
-                last_inflight_write->last_write_to_current_chunk = true;
+            if (!_inflight.empty() && _inflight.back()->chunk == old_head) {
+                _inflight.back()->last_write_to_current_chunk = true;
             } else {
-                // chunk was already written and it is done, we can release
-                // it right away
+                // every write for the old head is done, release it right away
                 old_head->reset();
                 _opts.resources.chunks().add(old_head);
             }
@@ -637,6 +647,23 @@ void segment_appender::dispatch_background_head_write() {
                 // prevent any more writes from merging into this entry
                 // as it is about to be dma_write'd.
                 w->set_state(write_state::DISPATCHED);
+                /*
+                 * The dma reads [chunk_begin, chunk_end) until it completes, so
+                 * appends must stay above chunk_end while it is in flight.
+                 *
+                 * Recording this on the chunk is only correct because a chunk
+                 * can have at most one write in flight at a time: all writes to
+                 * one chunk take a unit of the same _prev_head_write semaphore
+                 * before reaching this point and hold it until their completion
+                 * continuation below has run. A second concurrent write would
+                 * clear the mark while this one is still reading.
+                 */
+                vassert(
+                  w->chunk->inflight_dma_end() == 0,
+                  "chunk already has a write in flight ending at {}: {}",
+                  w->chunk->inflight_dma_end(),
+                  *this);
+                w->chunk->set_inflight_dma_end(w->chunk_end);
                 ++_inflight_dispatched;
                 ++_dispatched_writes;
 
@@ -651,6 +678,10 @@ void segment_appender::dispatch_background_head_write() {
                   .then([this, w, dma_size](size_t got) {
                       _opts.shared_stats->bytes_written += dma_size;
                       ++_opts.shared_stats->writes_completed;
+                      // the dma is done reading the chunk, appends may use the
+                      // trailing partial page again
+                      w->chunk->set_inflight_dma_end(0);
+
                       /*
                        * the continuation that captured full=true is the
                        * end of the dependency chain for this chunk. it
