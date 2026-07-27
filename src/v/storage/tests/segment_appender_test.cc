@@ -8,8 +8,226 @@
 #include <seastar/core/gate.hh>
 #include <seastar/core/seastar.hh>
 #include <seastar/core/sleep.hh>
+#include <seastar/core/temporary_buffer.hh>
+#include <seastar/util/later.hh>
+
+#include <algorithm>
+#include <array>
+#include <cstdlib>
+#include <random>
+#include <span>
+#include <vector>
 
 static ss::logger tst_log("test-logger");
+
+/// Checks the invariants the appender must uphold at the file boundary, the
+/// central one being that the buffer handed to file::dma_write() must not be
+/// mutated while that write is in flight.
+///
+/// Every write_dma() snapshots the caller's buffer and stays "in flight" for a
+/// configurable number of reactor turns, or until the test releases it by
+/// index. On release the live buffer is compared against the snapshot; a
+/// difference means an append mutated a region the DMA was still reading. The
+/// underlying write is then issued from the snapshot, modelling a DMA that
+/// sampled the buffer when the write was issued -- a correct appender must
+/// produce the expected file contents under that model.
+struct inflight_write_probe {
+    static constexpr size_t dma_alignment = 4_KiB;
+
+    struct entry {
+        size_t index{};
+        uint64_t pos{};
+        const char* buf{};
+        size_t len{};
+        ss::temporary_buffer<char> snapshot;
+        ss::promise<> gate;
+        bool released{false};
+    };
+
+    // while set, every write parks until the test releases it by index
+    bool hold{true};
+    // when not holding, how many reactor turns a write stays in flight
+    std::function<size_t()> delay_turns = [] { return 1; };
+
+    size_t started{0};
+    std::vector<ss::sstring> failures;
+    std::vector<ss::lw_shared_ptr<entry>> live;
+
+    void record(ss::sstring msg) {
+        vlog(tst_log.error, "{}", msg);
+        failures.push_back(std::move(msg));
+    }
+
+    /// O_DIRECT requires the file offset, the length and the buffer address to
+    /// all be alignment multiples.
+    void check_alignment(const entry& e) {
+        if (
+          e.pos % dma_alignment != 0 || e.len % dma_alignment != 0
+          || reinterpret_cast<uintptr_t>(e.buf) % dma_alignment != 0) {
+            record(
+              fmt::format(
+                "dma_write#{} is not {}-aligned: file_pos={} len={} buf={}",
+                e.index,
+                dma_alignment,
+                e.pos,
+                e.len,
+                fmt::ptr(e.buf)));
+        }
+    }
+
+    /// Writes to one head chunk are serialised by _prev_head_write, so two
+    /// writes must never be in flight over the same file range (the on-disk
+    /// result would depend on completion order) nor over the same memory range
+    /// (two DMAs reading one chunk region).
+    void check_no_concurrent_overlap(const entry& e) {
+        for (const auto& o : live) {
+            const bool file_overlap = e.pos < o->pos + o->len
+                                      && o->pos < e.pos + e.len;
+            const bool mem_overlap = e.buf < o->buf + o->len
+                                     && o->buf < e.buf + e.len;
+            if (file_overlap || mem_overlap) {
+                record(
+                  fmt::format(
+                    "dma_write#{} (file_pos={} len={} buf={}) overlaps "
+                    "in-flight "
+                    "dma_write#{} (file_pos={} len={} buf={}): file={} mem={}",
+                    e.index,
+                    e.pos,
+                    e.len,
+                    fmt::ptr(e.buf),
+                    o->index,
+                    o->pos,
+                    o->len,
+                    fmt::ptr(o->buf),
+                    file_overlap,
+                    mem_overlap));
+            }
+        }
+    }
+
+    void check_not_mutated(const entry& e) {
+        const std::span live_bytes(e.buf, e.len);
+        const std::span snapshot_bytes(e.snapshot.get(), e.len);
+        const auto [it, _] = std::ranges::mismatch(live_bytes, snapshot_bytes);
+        if (it == live_bytes.end()) {
+            return;
+        }
+        const auto off = static_cast<size_t>(
+          std::ranges::distance(live_bytes.begin(), it));
+        record(
+          fmt::format(
+            "dma_write#{} (file_pos={} len={}) buffer mutated while in flight, "
+            "first differing byte at buffer offset {} (file offset {})",
+            e.index,
+            e.pos,
+            e.len,
+            off,
+            e.pos + off));
+    }
+
+    void release(size_t index) {
+        auto it = std::ranges::find_if(
+          live, [index](const auto& e) { return e->index == index; });
+        vassert(it != live.end(), "no in-flight write with index {}", index);
+        vassert(!(*it)->released, "write {} already released", index);
+        (*it)->released = true;
+        (*it)->gate.set_value();
+    }
+
+    void release_all() {
+        for (auto& e : std::vector(live)) {
+            if (!std::exchange(e->released, true)) {
+                e->gate.set_value();
+            }
+        }
+    }
+};
+
+class probe_file final : public ss::file_impl {
+public:
+    probe_file(ss::file f, inflight_write_probe& probe)
+      : _f(std::move(f))
+      , _probe(probe) {}
+
+    ss::future<size_t> write_dma(
+      uint64_t pos,
+      const void* buffer,
+      size_t len,
+      ss::io_intent* intent) final {
+        auto e = ss::make_lw_shared<inflight_write_probe::entry>();
+        e->index = _probe.started++;
+        e->pos = pos;
+        e->buf = static_cast<const char*>(buffer);
+        e->len = len;
+        e->snapshot = ss::temporary_buffer<char>::aligned(
+          inflight_write_probe::dma_alignment, len);
+        std::memcpy(e->snapshot.get_write(), buffer, len);
+        vlog(
+          tst_log.debug,
+          "[dma_write#{}] file_pos={} len={} buf={}",
+          e->index,
+          pos,
+          len,
+          fmt::ptr(buffer));
+
+        _probe.check_alignment(*e);
+        _probe.check_no_concurrent_overlap(*e);
+        _probe.live.push_back(e);
+
+        if (_probe.hold) {
+            co_await e->gate.get_future();
+        } else {
+            for (size_t turns = _probe.delay_turns(); turns > 0; --turns) {
+                co_await ss::yield();
+            }
+        }
+
+        _probe.check_not_mutated(*e);
+
+        auto written = co_await get_file_impl(_f)->write_dma(
+          pos, e->snapshot.get(), len, intent);
+        std::erase(_probe.live, e);
+        co_return written;
+    }
+
+    ss::future<size_t>
+    write_dma(uint64_t pos, std::vector<iovec> iov, ss::io_intent* i) final {
+        return get_file_impl(_f)->write_dma(pos, std::move(iov), i);
+    }
+    ss::future<size_t>
+    read_dma(uint64_t pos, void* buffer, size_t len, ss::io_intent* i) final {
+        return get_file_impl(_f)->read_dma(pos, buffer, len, i);
+    }
+    ss::future<size_t>
+    read_dma(uint64_t pos, std::vector<iovec> iov, ss::io_intent* i) final {
+        return get_file_impl(_f)->read_dma(pos, std::move(iov), i);
+    }
+    ss::future<ss::temporary_buffer<uint8_t>>
+    dma_read_bulk(uint64_t pos, size_t len, ss::io_intent* i) final {
+        return get_file_impl(_f)->dma_read_bulk(pos, len, i);
+    }
+    ss::future<> flush() final { return get_file_impl(_f)->flush(); }
+    ss::future<struct stat> stat() final { return get_file_impl(_f)->stat(); }
+    ss::future<> truncate(uint64_t len) final {
+        return get_file_impl(_f)->truncate(len);
+    }
+    ss::future<> discard(uint64_t pos, uint64_t len) final {
+        return get_file_impl(_f)->discard(pos, len);
+    }
+    ss::future<> allocate(uint64_t pos, uint64_t len) final {
+        return get_file_impl(_f)->allocate(pos, len);
+    }
+    ss::future<uint64_t> size() final { return get_file_impl(_f)->size(); }
+    ss::future<> close() final { return get_file_impl(_f)->close(); }
+    ss::subscription<ss::directory_entry> list_directory(
+      std::function<ss::future<>(ss::directory_entry)> next) final {
+        return get_file_impl(_f)->list_directory(std::move(next));
+    }
+
+private:
+    ss::file _f;
+    inflight_write_probe& _probe;
+};
 
 struct write_op {
     explicit write_op(size_t s)
@@ -49,8 +267,10 @@ public:
         resources.start().get();
         storage::segment_appender::options opts(std::nullopt, resources, stats);
         appender = std::make_unique<storage::segment_appender>(
-          std::move(file), opts);
+          wrap_file(std::move(file)), opts);
     }
+
+    virtual ss::file wrap_file(ss::file f) { return f; }
 
     ss::future<> TearDownAsync() override {
         vlog(
@@ -297,6 +517,229 @@ TEST_F(SegmentAppenderFixture, TestConcurrentFlushesSmallWritesShifted) {
     appender->close().get();
     ASSERT_TRUE(file_content_equal_to_reference().get());
     ASSERT_GE(reference.size_bytes(), 24_KiB);
+}
+
+/// Appends through a file that holds every dma write "in flight", either parked
+/// until the test releases it or for a number of reactor turns, and checks the
+/// appender's file-boundary invariants while it is in flight.
+struct SegmentAppenderInflightFixture : SegmentAppenderFixture {
+    ss::file wrap_file(ss::file f) override {
+        return ss::file(ss::make_shared<probe_file>(std::move(f), probe));
+    }
+
+    ss::future<> wait_for_writes(size_t n) {
+        for (size_t i = 0; i < 100000 && probe.started < n; ++i) {
+            co_await ss::yield();
+        }
+        ASSERT_GE_CORO(probe.started, n);
+    }
+
+    void flush_nowait() { flushes.push_back(appender->flush()); }
+
+    ss::future<> await_flushes() {
+        co_await ss::when_all_succeed(flushes.begin(), flushes.end());
+        flushes.clear();
+    }
+
+    // let every parked and future write through so close() can complete
+    ss::future<> drain() {
+        probe.hold = false;
+        while (!probe.live.empty()) {
+            probe.release_all();
+            co_await ss::yield();
+        }
+        co_await await_flushes();
+    }
+
+    void report_failures() const {
+        for (const auto& f : probe.failures) {
+            ADD_FAILURE() << f;
+        }
+    }
+
+    inflight_write_probe probe;
+    std::vector<ss::future<>> flushes;
+};
+
+/*
+ * A dispatched write must not have its chunk appended to, otherwise the DMA
+ * reads a buffer that is being mutated underneath it -- the last-page
+ * corruption that 4b435b9021 set out to prevent.
+ *
+ * is_chunk_write_dispatched() only inspects _inflight.back(), so a newer QUEUED
+ * write for the same chunk hides an older DISPATCHED one and the guard lets the
+ * append through. Reaching that state:
+ *
+ *   append 4 KiB, flush   -> w0 covers chunk [0, 4096), DISPATCHED and parked
+ *   append 100            -> head has a dispatched write, so the (empty)
+ *                            remainder is copied into a fresh chunk C
+ *   flush                 -> w1 covers C [0, 4096), QUEUED behind w0 on
+ *                            _prev_head_write, which the copy does not exchange
+ *   append 30             -> back() is w1/QUEUED so the append goes into C in
+ *                            place; safe, no DMA is reading C yet
+ *   release w0            -> w1 is dispatched, its DMA now reads C [0, 4096)
+ *   flush                 -> w2 cannot merge into w1 (DISPATCHED), so it is a
+ *                            new QUEUED entry, again on C
+ *   append 30             -> back() is w2/QUEUED, guard says "not dispatched",
+ *                            and the append lands inside w1's live DMA range
+ */
+TEST_F_CORO(
+  SegmentAppenderInflightFixture, TestAppendDoesNotMutateInflightDma) {
+    co_await append_data(tests::random_iobuf(4_KiB));
+    flush_nowait();
+    co_await wait_for_writes(1);
+
+    co_await append_data(tests::random_iobuf(100));
+    flush_nowait();
+    co_await ss::yield();
+    ASSERT_EQ_CORO(probe.started, 1);
+
+    co_await append_data(tests::random_iobuf(30));
+
+    probe.release(0);
+    co_await wait_for_writes(2);
+
+    flush_nowait();
+    co_await ss::yield();
+    ASSERT_EQ_CORO(probe.started, 2);
+
+    co_await append_data(tests::random_iobuf(30));
+
+    co_await drain();
+    co_await appender->close();
+
+    report_failures();
+    // the file contents are still correct: the mutated page is rewritten by the
+    // following write, which is why no content check can detect this
+    ASSERT_TRUE_CORO(co_await file_content_equal_to_reference());
+}
+
+/*
+ * The same invariants, driven by a random workload rather than a hand-built
+ * interleaving. Every write stays in flight for a random number of reactor
+ * turns, so appends, flushes and truncations land at varying points relative to
+ * the writes they race with.
+ *
+ * The seed is fixed so a failure is reproducible; override it to explore more
+ * schedules:
+ *
+ *   bazel test //src/v/storage/tests:segment_appender_test \
+ *     --test_env=SEGMENT_APPENDER_FUZZ_SEED=<n> \
+ *     --test_env=SEGMENT_APPENDER_FUZZ_ITERS=<n> \
+ *     --test_arg=--gtest_filter='*RandomWorkload*'
+ */
+TEST_F_CORO(
+  SegmentAppenderInflightFixture, TestInflightInvariantsRandomWorkload) {
+    auto env = [](const char* name, uint64_t fallback) {
+        const char* v = std::getenv(name);
+        return v != nullptr ? std::stoull(v) : fallback;
+    };
+    const uint64_t seed = env("SEGMENT_APPENDER_FUZZ_SEED", 20260727);
+    const uint64_t iterations = env("SEGMENT_APPENDER_FUZZ_ITERS", 1000);
+
+    std::mt19937_64 rng(seed);
+    probe.hold = false;
+    probe.delay_turns = [&rng] { return rng() % 4; };
+
+    // a spread of sizes so the head chunk lands both on and off page boundaries
+    const std::array sizes{
+      1UL,
+      7UL,
+      30UL,
+      100UL,
+      512UL,
+      1000UL,
+      4095UL,
+      4_KiB,
+      4097UL,
+      8_KiB,
+      12000UL,
+      16_KiB,
+      20000UL};
+
+    for (uint64_t i = 0; i < iterations; ++i) {
+        co_await append_data(tests::random_iobuf(sizes[rng() % sizes.size()]));
+
+        // an unawaited flush is what stacks up several _inflight entries
+        if (rng() % 3 == 0) {
+            flush_nowait();
+        }
+        if (rng() % 40 == 0 && reference.size_bytes() > 8_KiB) {
+            // truncating to a usually unaligned offset leaves the rehydrated
+            // head with an unaligned flushed position
+            co_await await_flushes();
+            const auto keep = reference.size_bytes() - (rng() % 8_KiB);
+            co_await execute_operation(truncate_op(keep));
+        }
+        if (rng() % 4 == 0) {
+            co_await ss::yield();
+        }
+    }
+
+    co_await drain();
+    co_await appender->close();
+
+    vlog(
+      tst_log.info,
+      "seed={} iterations={} bytes={} writes={} failures={} "
+      "remainder_copied={} "
+      "merged={} split={}",
+      seed,
+      iterations,
+      reference.size_bytes(),
+      probe.started,
+      probe.failures.size(),
+      stats->bytes_copied_in_chunk_remainder,
+      stats->merged_writes,
+      stats->split_writes);
+
+    report_failures();
+    ASSERT_TRUE_CORO(co_await file_content_equal_to_reference());
+}
+
+/*
+ * Two page-aligned writes on the same chunk cover disjoint pages: w0 reads
+ * chunk [0, 4096) and writes file [0, 4096), w1 reads chunk [4096, 8192) and
+ * writes file [4096, 8192). Nothing about the data requires them to be ordered,
+ * so they could in principle be in flight together.
+ *
+ * They are not. Every write for a chunk takes a unit of the same
+ * _prev_head_write semaphore before it is handed to the file, and holds it
+ * until its completion has run, so while w0 is parked w1 never reaches the file
+ * at all. That is what lets the appender record the in-flight dma extent on the
+ * chunk: there is only ever one to record.
+ */
+TEST_F_CORO(
+  SegmentAppenderInflightFixture, TestSameChunkWritesAreNeverConcurrent) {
+    co_await append_data(tests::random_iobuf(4_KiB));
+    flush_nowait();
+    co_await wait_for_writes(1);
+    ASSERT_EQ_CORO(probe.live.size(), 1);
+
+    // page-aligned, so this accumulates into the same chunk rather than being
+    // copied out to a fresh one
+    co_await append_data(tests::random_iobuf(4_KiB));
+    flush_nowait();
+
+    // give w1 every opportunity to reach the file while w0 is still in flight
+    for (int i = 0; i < 100; ++i) {
+        co_await ss::yield();
+    }
+    ASSERT_EQ_CORO(probe.started, 1);
+    ASSERT_EQ_CORO(probe.live.size(), 1);
+    ASSERT_EQ_CORO(probe.live.front()->pos, 0);
+
+    // w0 completing is what lets w1 through
+    probe.release(0);
+    co_await wait_for_writes(2);
+    ASSERT_EQ_CORO(probe.live.size(), 1);
+    ASSERT_EQ_CORO(probe.live.front()->pos, 4_KiB);
+
+    co_await drain();
+    co_await appender->close();
+
+    report_failures();
+    ASSERT_TRUE_CORO(co_await file_content_equal_to_reference());
 }
 
 using chunk = storage::segment_appender_chunk;
