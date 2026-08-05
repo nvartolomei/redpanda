@@ -319,6 +319,7 @@ redpanda_cc_library(
         "topic_manifest_upload_manager.h",
     ],
     implementation_deps = [
+        ":state_accessors",
         ":topic_manifest_uploader",
         "//src/v/cloud_io:remote",
         "//src/v/cloud_storage:topic_path_provider",
